@@ -19,6 +19,11 @@ class_name = "GameRoom"
 name = "BOARD"
 class_name = "LeaderboardDO"
 
+# Singleton player accounts (phone + password auth, wallet, stats).
+[[durable_objects.bindings]]
+name = "ACCOUNTS"
+class_name = "AccountsDO"
+
 # SQLite-backed Durable Objects — the class type available on the free plan.
 [[migrations]]
 tag = "v1"
@@ -28,3 +33,8 @@ new_sqlite_classes = ["GameRoom"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["LeaderboardDO"]
+
+# accounts: adds the accounts class only; GameRoom + LeaderboardDO storage untouched.
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["AccountsDO"]

@@ -38,6 +38,8 @@ export class LeaderboardDO {
            updated INTEGER NOT NULL DEFAULT 0
          )`
       );
+      // Optional profile photo (small JPEG data URL), added with accounts.
+      try { ctx.storage.sql.exec('ALTER TABLE entries ADD COLUMN photo TEXT'); } catch { /* column already there */ }
     });
   }
 
@@ -54,22 +56,28 @@ export class LeaderboardDO {
       const avatar = clampInt(body.avatar, 0, 3, 0);
       const wins = clampInt(body.wins, 0, 100000, 0);
       const coins = clampInt(body.coinsWon, 0, 10000000, 0);
+      // Optional: the player's profile photo (small JPEG data URL). Only a
+      // plausible photo replaces the stored one; absence keeps the old one.
+      const photo = typeof body.photo === 'string' && body.photo.startsWith('data:image/jpeg') && body.photo.length <= 60000
+        ? body.photo
+        : null;
       // Clients send cumulative totals, so an upsert replaces the row.
       this.ctx.storage.sql.exec(
-        `INSERT INTO entries (name, avatar, wins, coins, updated) VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO entries (name, avatar, wins, coins, updated, photo) VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(name) DO UPDATE SET
            avatar = excluded.avatar, wins = excluded.wins,
-           coins = excluded.coins, updated = excluded.updated`,
-        name, avatar, wins, coins, Date.now()
+           coins = excluded.coins, updated = excluded.updated,
+           photo = COALESCE(excluded.photo, entries.photo)`,
+        name, avatar, wins, coins, Date.now(), photo
       );
       return json({ ok: true });
     }
     if (request.method === 'GET') {
       const rows = this.ctx.storage.sql
-        .exec('SELECT name, avatar, wins, coins FROM entries ORDER BY coins DESC, wins DESC, updated ASC LIMIT 20')
+        .exec('SELECT name, avatar, wins, coins, photo FROM entries ORDER BY coins DESC, wins DESC, updated ASC LIMIT 20')
         .toArray();
       return json({
-        entries: rows.map((r) => ({ name: r.name, avatar: r.avatar, wins: r.wins, coinsWon: r.coins })),
+        entries: rows.map((r) => ({ name: r.name, avatar: r.avatar, wins: r.wins, coinsWon: r.coins, photo: r.photo || null })),
       });
     }
     return json({ error: 'method not allowed' }, 405);

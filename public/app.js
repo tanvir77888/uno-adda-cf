@@ -6,6 +6,8 @@ const COLOR_NAMES = { red: 'Red', yellow: 'Yellow', green: 'Green', blue: 'Blue'
 
 let ws = null;
 let snap = null;               // latest state snapshot
+let sessionToken = null;       // account session token (auth) — NOT the room seat token
+let account = null;            // account profile from /api/auth/me (coins + stats source of truth)
 let unoArmed = false;          // UNO button pressed, declaration rides the next play
 let pendingWildCard = null;    // card id waiting on the color picker
 let colorPurpose = null;       // 'wild' | 'first'
@@ -30,7 +32,10 @@ function connect(onOpen) {
   ws.onmessage = (ev) => {
     const msg = JSON.parse(ev.data);
     if (msg.type === 'state') { snap = msg; onSnapshot(msg); }
-    else if (msg.type === 'error') { showError(msg.message); }
+    else if (msg.type === 'error') {
+      showError(msg.message);
+      if (/Session expired/.test(msg.message)) forceLogout();
+    }
     else if (msg.type === 'voice_roster') onVoiceRoster(msg);
     else if (msg.type === 'voice_peer_joined') closePeer(msg.seatId); // fresh offer is coming; drop any stale pc
     else if (msg.type === 'voice_peer_left') closePeer(msg.seatId);
@@ -45,14 +50,14 @@ function connect(onOpen) {
 }
 function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
 
-function myName() { return ($('in-name').value || '').trim() || 'Player'; }
+function myName() { return account ? account.name : 'Player'; }
 function saveSession() {
-  if (snap) localStorage.setItem('uno-adda-session', JSON.stringify({ code: snap.room.code, token: snap.you.token, name: myName() }));
+  if (snap) localStorage.setItem('uno-adda-room', JSON.stringify({ code: snap.room.code, token: snap.you.token, name: myName() }));
 }
 function tryRestore() {
   try {
-    const s = JSON.parse(localStorage.getItem('uno-adda-session') || 'null');
-    if (s && s.code && s.token) send({ type: 'join_room', code: s.code, token: s.token, name: s.name, avatar: profile.avatar });
+    const s = JSON.parse(localStorage.getItem('uno-adda-room') || 'null');
+    if (s && s.code && s.token) send({ type: 'join_room', code: s.code, token: s.token, name: s.name, avatar: profile.avatar, session: sessionToken });
   } catch { /* nothing saved */ }
 }
 
@@ -70,25 +75,23 @@ function readRules(containerId) {
 }
 $('bot-toggles').innerHTML = ruleTogglesHtml();
 $('room-toggles').innerHTML = ruleTogglesHtml();
-$('in-name').value = localStorage.getItem('uno-adda-name') || '';
-$('in-name').addEventListener('change', () => localStorage.setItem('uno-adda-name', myName()));
 
 $('btn-bots').onclick = () => connect(() => send({
-  type: 'create_bot_game', name: myName(), avatar: profile.avatar,
+  type: 'create_bot_game', name: myName(), avatar: profile.avatar, session: sessionToken,
   botCount: parseInt($('in-bots').value, 10), rules: readRules('bot-toggles'),
 }));
 $('btn-wild').onclick = () => connect(() => send({
-  type: 'create_bot_game', name: myName(), avatar: profile.avatar,
+  type: 'create_bot_game', name: myName(), avatar: profile.avatar, session: sessionToken,
   botCount: parseInt($('in-bots-wild').value, 10), rules: { stacking: true, challenge: true, allWild: true },
 }));
 $('btn-create').onclick = () => connect(() => send({
-  type: 'create_room', name: myName(), avatar: profile.avatar, mode: $('in-mode').value, rules: readRules('room-toggles'),
+  type: 'create_room', name: myName(), avatar: profile.avatar, session: sessionToken, mode: $('in-mode').value, rules: readRules('room-toggles'),
 }));
 $('btn-join').onclick = () => {
   const code = $('in-code').value.trim().toUpperCase();
   if (code.length !== 6) return showError('Enter the 6-letter room code');
   routeCode = code; // the socket must land on that room's Durable Object
-  connect(() => send({ type: 'join_room', code, name: myName(), avatar: profile.avatar }));
+  connect(() => send({ type: 'join_room', code, name: myName(), avatar: profile.avatar, session: sessionToken }));
 };
 
 // ------------------------------------------------------------ snapshot routing
@@ -98,7 +101,7 @@ function onSnapshot(msg) {
   saveSession();
   if (msg.room.quick && quick) quick.charged = false; // the match exists — the stake is in play
   settleQuick(msg);
-  countClassicMatchWin(msg);
+  countMatchEnd(msg);
   if (!$('mm-modal').classList.contains('hidden')) renderMmSlots();
   const status = msg.room.status;
   showView(status === 'waiting' ? 'lobby' : 'game');
@@ -119,20 +122,20 @@ function showView(name) {
 }
 
 function showError(message) {
-  // A quick match that failed before it started refunds its stake.
+  // A quick match that failed before it started refunds its stake (server wallet).
   if (quick && quick.charged && !$('mm-modal').classList.contains('hidden')) {
-    wallet.balance += quick.bet;
-    saveWallet();
-    paintWallet();
+    const bet = quick.bet;
     quick = null;
     mmTimers.forEach(clearTimeout);
     mmTimers = [];
     $('mm-modal').classList.add('hidden');
     $('vs-modal').classList.add('hidden');
+    apiPost('/api/wallet/adjust', { amount: bet, reason: 'refund' })
+      .then((r) => { if (r.ok && r.data) setCoins(r.data.coins); });
   }
   for (const id of ['home-error', 'lobby-error']) { const el = $(id); if (el) el.textContent = message; }
   if (snap) toast(message);
-  if (/Room not found/.test(message)) localStorage.removeItem('uno-adda-session');
+  if (/Room not found/.test(message)) localStorage.removeItem('uno-adda-room');
 }
 
 // ------------------------------------------------------------ lobby
@@ -148,7 +151,7 @@ function renderLobby(msg) {
   const me = msg.seats.find(s => s.isYou);
   $('lobby-seats').innerHTML = msg.seats.map((s, i) => `
     <div class="seat-row" data-voice-mark="${s.id}">
-      <div class="avatar av${s.avatar != null ? s.avatar : i % 4}"></div>
+      ${avatarHtml(s, i)}
       <div class="grow"><b>${esc(s.name)}</b>${s.isYou ? ' (you)' : ''}${s.isBot ? ' 🤖' : ''}<br>
       <span class="muted">Score: ${s.score}</span></div>
       ${s.id === msg.room.hostSeatId ? '<span class="badge host">HOST</span>' : ''}
@@ -172,7 +175,7 @@ function leaveRoom() {
   send({ type: 'leave' });
   routeCode = null;
   quick = null;
-  localStorage.removeItem('uno-adda-session');
+  localStorage.removeItem('uno-adda-room');
   snap = null;
   showView('home');
   if (ws) { ws.onclose = null; ws.close(); ws = null; }
@@ -190,7 +193,7 @@ function renderGame(msg) {
   // opponents
   $('opponents').innerHTML = msg.seats.filter(s => !s.isYou).map(s => `
     <div class="opp ${s.isCurrent ? 'current' : ''} ${s.connected ? '' : 'disc'}" data-voice-mark="${s.id}">
-      <div class="avatar av${s.avatar != null ? s.avatar : msg.seats.indexOf(s) % 4}"></div>
+      ${avatarHtml(s, msg.seats.indexOf(s))}
       <div><b>${esc(s.name)}</b>${s.isBot ? ' 🤖' : ''}</div>
       <div class="muted">${s.cardCount} cards · ${s.score} pts${s.team ? ' · Team ' + s.team.toUpperCase() : ''}</div>
       <div class="backs">${backsHtml(Math.min(s.cardCount, 7))}</div>
@@ -420,6 +423,26 @@ function startTimerBar(g) {
 function initials(name) { return (name || '?').trim().slice(0, 2).toUpperCase(); }
 function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
+// A seat's face: the uploaded account photo when there is one, otherwise
+// the chosen character sprite. Used for every avatar on every screen.
+function avatarHtml(s, idx, tag) {
+  tag = tag || 'div';
+  if (s && s.photo) return `<${tag} class="avatar has-photo"><img class="avatar-img" src="${esc(s.photo)}" alt=""></${tag}>`;
+  const n = s && s.avatar != null ? s.avatar : ((idx || 0) % 4);
+  return `<${tag} class="avatar av${n}"></${tag}>`;
+}
+function paintAvatarEl(el, baseClass, s, idx) {
+  if (!el) return;
+  if (s && s.photo) {
+    el.className = baseClass + ' has-photo';
+    el.innerHTML = `<img class="avatar-img" src="${esc(s.photo)}" alt="">`;
+  } else {
+    const n = s && s.avatar != null ? s.avatar : ((idx || 0) % 4);
+    el.className = baseClass + ' av' + n;
+    el.innerHTML = '';
+  }
+}
+
 // ------------------------------------------------------------ voice chat (WebRTC mesh)
 // Peer-to-peer audio; the server only relays signaling inside the room.
 // Optional — the game works fully without it. New joiners offer to the
@@ -630,8 +653,8 @@ function applyFxInner(msg) {
   const pg = fxPrev && fxPrev.game;
   const me = msg.seats.find(s => s.isYou);
 
-  // profile chip: my game avatar shows my chosen character
-  if (me) { const ma = $('my-avatar'); if (ma) ma.className = 'my-avatar av' + (me.avatar != null ? me.avatar : msg.seats.indexOf(me) % 4); }
+  // profile chip: my game avatar shows my photo or chosen character
+  if (me) paintAvatarEl($('my-avatar'), 'my-avatar av', me, msg.seats.indexOf(me));
 
   // banner visibility + my-turn scene state
   const tb = $('turn-banner');
@@ -933,10 +956,11 @@ paintSoundBtn();
 document.addEventListener('pointerdown', (e) => {
   if (e.target.closest && e.target.closest('.btn, .color-btn')) sfx('click');
 }, { passive: true });
-// ------------------------------------------------------------ v3: wallet, profile, quick match, leaderboard
-// Coins are a client-side toy wallet in localStorage — free play money,
-// worth nothing, never bought or sold. The server never sees them except
-// as the quick-match stake echoed in the room snapshot.
+// ------------------------------------------------------------ accounts: API, wallet, profile, quick match, leaderboard
+// Coins and stats live in the player's ACCOUNT on the server (see
+// src/accounts.js) — the account is the source of truth. The localStorage
+// 'uno-adda-wallet' blob is now only a paint cache so the coin chip can
+// render instantly; every API response reconciles it.
 const TIERS = [
   { id: 'casual', name: 'Casual', bet: 20 },
   { id: 'standard', name: 'Standard', bet: 50 },
@@ -957,6 +981,36 @@ function loadWallet() {
 }
 let wallet = loadWallet();
 function saveWallet() { localStorage.setItem('uno-adda-wallet', JSON.stringify(wallet)); }
+
+// ------------------------------------------------------------ account API
+async function apiFetch(path, opts) {
+  opts = opts || {};
+  try {
+    const res = await fetch(path, {
+      method: opts.method || 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(sessionToken ? { Authorization: 'Bearer ' + sessionToken } : {}),
+      },
+      body: opts.body != null ? JSON.stringify(opts.body) : undefined,
+    });
+    let data = null;
+    try { data = await res.json(); } catch { /* empty body */ }
+    return { status: res.status, ok: res.ok, data };
+  } catch {
+    return { status: 0, ok: false, data: null };
+  }
+}
+function apiGet(path) { return apiFetch(path); }
+function apiPost(path, body) { return apiFetch(path, { method: 'POST', body: body || {} }); }
+
+// Reconcile the painted balance with a server-confirmed coin count.
+function setCoins(n) {
+  wallet.balance = Math.max(0, Math.floor(Number(n) || 0));
+  if (account) account.coins = wallet.balance;
+  saveWallet();
+  paintWallet();
+}
 
 function loadProfile() {
   try {
@@ -1000,24 +1054,31 @@ function coinBurst(anchor) {
     setTimeout(() => img.remove(), 900);
   }
 }
-function claimGift() {
-  if (wallet.lastGiftDate === todayStr()) return;
-  wallet.lastGiftDate = todayStr();
-  wallet.balance += 200;
-  saveWallet();
-  paintWallet();
-  coinBurst($('btn-gift'));
-  sfx('win');
-  toast('🎁 Daily gift: +200 coins!');
-}
-// Free refill so nobody is ever hard-locked: balance too low to play,
-// today's gift already claimed, once per day.
-function maybeRescue() {
-  if (wallet.balance < 20 && wallet.lastGiftDate === todayStr() && wallet.lastRescueDate !== todayStr()) {
-    wallet.lastRescueDate = todayStr();
-    wallet.balance += 100;
+async function claimGift() {
+  if (wallet.lastGiftDate === todayStr()) return; // button is disabled anyway
+  const res = await apiPost('/api/wallet/gift');
+  if (res.ok && res.data) {
+    wallet.lastGiftDate = todayStr(); // paint hint only — the server decides
+    setCoins(res.data.coins);
+    coinBurst($('btn-gift'));
+    sfx('win');
+    toast('🎁 Daily gift: +200 coins!');
+  } else if (res.status === 409) {
+    wallet.lastGiftDate = todayStr();
     saveWallet();
     paintWallet();
+    toast('🎁 Already claimed — come back tomorrow!');
+  } else {
+    toast('Gift failed — check your connection and try again.');
+  }
+}
+// Free refill so nobody is ever hard-locked: the server grants +100 once
+// a day when the balance is under 20 and today's gift is already claimed.
+async function apiRescue() {
+  const res = await apiPost('/api/wallet/rescue');
+  if (res.ok && res.data) {
+    wallet.lastRescueDate = todayStr();
+    setCoins(res.data.coins);
     toast('🪙 Free refill: +100 coins — good luck!');
     return true;
   }
@@ -1043,28 +1104,30 @@ document.querySelectorAll('.tier').forEach(b => {
   b.onclick = () => startQuickMatch(TIERS.find(t => t.id === b.dataset.tier));
 });
 
-// ------------------------------------------------------------ avatar picker
-function paintHomeAvatar() {
-  const el = $('name-avatar');
-  if (el) el.className = 'name-avatar av av' + myAvatar();
+// ------------------------------------------------------------ profile chip & avatar picker
+// The home chip shows my account (photo or character, name, Player ID) and
+// opens the profile screen. The character picker lives in the profile.
+function paintProfileChip() {
+  paintAvatarEl($('name-avatar'), 'name-avatar av',
+    account ? { photo: account.photo, avatar: myAvatar() } : null, 0);
+  const n = $('profile-chip-name');
+  if (n) n.textContent = account ? account.name : 'Player';
+  const i = $('profile-chip-id');
+  if (i) i.textContent = account ? 'ID: ' + account.playerId : 'ID: —';
 }
-function openAvatarPicker() {
-  document.querySelectorAll('.pick-av').forEach(b => b.classList.toggle('selected', Number(b.dataset.av) === myAvatar()));
-  $('avatar-modal').classList.remove('hidden');
-}
-$('name-avatar').onclick = openAvatarPicker;
-$('my-avatar').onclick = openAvatarPicker;
+$('profile-chip').onclick = openProfile;
+$('my-avatar').onclick = openProfile;
+paintProfileChip();
 document.querySelectorAll('.pick-av').forEach(b => {
   b.onclick = () => {
     profile.avatar = Number(b.dataset.av);
+    if (account) account.avatar = profile.avatar;
     saveProfile();
-    paintHomeAvatar();
-    document.querySelectorAll('.pick-av').forEach(x => x.classList.toggle('selected', x === b));
+    paintProfileChip();
+    if (account) paintProfile();
     sfx('click');
   };
 });
-$('btn-avatar-close').onclick = () => $('avatar-modal').classList.add('hidden');
-paintHomeAvatar();
 
 // ------------------------------------------------------------ quick match flow
 let quick = null; // { tier, bet, charged, settledKey, payout }
@@ -1073,9 +1136,9 @@ let mmRevealed = 1;
 let mmStartedAt = 0;
 const countedMatchRooms = new Set();
 
-function startQuickMatch(tier) {
+async function startQuickMatch(tier) {
   if (!tier) return;
-  maybeRescue();
+  if (wallet.balance < 20) await apiRescue(); // server grants the free refill if eligible
   if (wallet.balance < tier.bet) {
     const hint = wallet.lastGiftDate !== todayStr()
       ? 'Claim your Daily Gift 🎁 — or play a cheaper tier.'
@@ -1084,13 +1147,18 @@ function startQuickMatch(tier) {
     toast(`Not enough coins for ${tier.name} — ${hint}`);
     return;
   }
-  wallet.balance -= tier.bet;
-  saveWallet();
-  paintWallet();
+  // The stake leaves the account wallet BEFORE matchmaking; a pre-start
+  // failure refunds it (see showError), a finished match settles it.
+  const res = await apiPost('/api/wallet/adjust', { amount: -tier.bet, reason: 'stake' });
+  if (!res.ok || !res.data) {
+    showError((res.data && res.data.error) || 'Could not place your stake — please try again.');
+    return;
+  }
+  setCoins(res.data.coins);
   quick = { tier, bet: tier.bet, charged: true, settledKey: null, payout: 0 };
   showMatchmaking();
   connect(() => send({
-    type: 'create_bot_game', name: myName(), avatar: profile.avatar,
+    type: 'create_bot_game', name: myName(), avatar: profile.avatar, session: sessionToken,
     botCount: 3, rules: { stacking: true, challenge: true, allWild: false },
     quick: true, bet: tier.bet,
   }));
@@ -1114,10 +1182,10 @@ function renderMmSlots() {
   box.innerHTML = [0, 1, 2, 3].map(i => {
     const s = seats && seats[i];
     if (s && (i === 0 || i < mmRevealed)) {
-      return `<div class="mm-slot filled"><span class="avatar av${s.avatar != null ? s.avatar : i}"></span><b>${esc(s.name)}</b></div>`;
+      return `<div class="mm-slot filled">${avatarHtml(s, i, 'span')}<b>${esc(s.name)}</b></div>`;
     }
     if (i === 0) {
-      return `<div class="mm-slot filled"><span class="avatar av${myAvatar()}"></span><b>${esc(myName())}</b></div>`;
+      return `<div class="mm-slot filled">${avatarHtml({ photo: account && account.photo, avatar: myAvatar() }, 0, 'span')}<b>${esc(myName())}</b></div>`;
     }
     return `<div class="mm-slot"><span class="avatar avq">?</span><b>Searching…</b></div>`;
   }).join('');
@@ -1136,16 +1204,17 @@ function maybeShowVS() {
   mmRevealed = 4;
   renderMmSlots();
   $('mm-modal').classList.add('hidden');
-  $('vs-my-avatar').className = 'avatar av' + myAvatar();
+  paintAvatarEl($('vs-my-avatar'), 'avatar', { photo: account && account.photo, avatar: myAvatar() }, 0);
   $('vs-my-name').textContent = myName();
   $('vs-opps').innerHTML = snap.seats.filter(s => !s.isYou).map(s => `
-    <div class="vs-card"><span class="avatar av${s.avatar != null ? s.avatar : 0}"></span><b>${esc(s.name)}</b></div>`).join('');
+    <div class="vs-card">${avatarHtml(s, 0, 'span')}<b>${esc(s.name)}</b></div>`).join('');
   $('vs-modal').classList.remove('hidden');
   sfx('ding');
   mmTimers.push(setTimeout(() => $('vs-modal').classList.add('hidden'), 1600));
 }
 
-// Settle a finished quick match exactly once per room+round.
+// Settle a finished quick match exactly once per room+round: the pot is
+// credited to the account wallet and the match is recorded in the stats.
 function settleQuick(msg) {
   if (!quick || !msg.room.quick || msg.room.status !== 'roundEnd' || !msg.lastRound) return;
   const key = msg.room.code + '|' + msg.room.roundNo;
@@ -1154,29 +1223,42 @@ function settleQuick(msg) {
   const winner = msg.seats.find(s => s.id === msg.lastRound.winnerSeatId);
   const pot = (msg.room.bet || quick.bet) * msg.seats.length;
   if (winner && winner.isYou) {
-    wallet.balance += pot;
-    saveWallet();
-    paintWallet();
-    profile.wins++;
-    profile.coinsWon += pot;
-    saveProfile();
     quick.payout = pot;
     coinBurst($('game-topbar'));
+    apiPost('/api/wallet/adjust', { amount: pot, reason: 'pot' })
+      .then((r) => { if (r.ok && r.data) setCoins(r.data.coins); });
+    apiStatsMatch(true, pot);
   } else {
     quick.payout = 0;
+    apiStatsMatch(false, 0);
   }
-  submitStats();
 }
 
-// Classic bot matches: reaching 500 against only bots counts as a win.
-function countClassicMatchWin(msg) {
-  if (msg.room.quick || !msg.matchWinnerSeatId || msg.matchWinnerSeatId !== msg.you.seatId) return;
-  if (!msg.seats.every(s => s.isYou || s.isBot)) return;
+// Record a finished match in the account stats; the response carries the
+// authoritative cumulative totals, which also feed the leaderboard.
+function apiStatsMatch(won, coinsWon) {
+  return apiPost('/api/stats/match', { won: !!won, coinsWon: coinsWon || 0 }).then((res) => {
+    if (res.ok && res.data) {
+      if (account) {
+        account.matches = res.data.matches;
+        account.wins = res.data.wins;
+        account.coinsWon = res.data.coinsWon;
+      }
+      profile.wins = res.data.wins;
+      profile.coinsWon = res.data.coinsWon;
+      saveProfile();
+      if (won) submitStats();
+    }
+  });
+}
+
+// Any non-quick match (classic bots or a friend room) ends when someone
+// reaches 500 — record it once per room.
+function countMatchEnd(msg) {
+  if (msg.room.quick || !msg.matchWinnerSeatId) return;
   if (countedMatchRooms.has(msg.room.code)) return;
   countedMatchRooms.add(msg.room.code);
-  profile.wins++;
-  saveProfile();
-  submitStats();
+  apiStatsMatch(msg.matchWinnerSeatId === msg.you.seatId, 0);
 }
 
 // ------------------------------------------------------------ leaderboard
@@ -1185,7 +1267,10 @@ async function submitStats() {
     await fetch('/api/leaderboard', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: myName(), avatar: myAvatar(), wins: profile.wins, coinsWon: profile.coinsWon }),
+      body: JSON.stringify({
+        name: myName(), avatar: myAvatar(), wins: profile.wins, coinsWon: profile.coinsWon,
+        photo: account && account.photo ? account.photo : undefined,
+      }),
     });
   } catch { /* offline — the board is best-effort */ }
 }
@@ -1212,7 +1297,7 @@ function renderBoard(entries) {
   box.innerHTML = entries.map((e, i) => `
     <div class="board-row ${String(e.name).toLowerCase() === myName().toLowerCase() ? 'mine' : ''}">
       <span class="board-rank">${medals[i] || (i + 1)}</span>
-      <span class="avatar av${e.avatar != null ? e.avatar : 0}"></span>
+      ${avatarHtml(e, 0, 'span')}
       <span class="board-name">${esc(e.name)}</span>
       <span class="board-wins">${e.wins} wins</span>
       <span class="board-coins"><img class="coin-ic" src="art/coin.webp" alt=""> ${e.coinsWon}</span>
@@ -1223,10 +1308,190 @@ $('btn-board-close').onclick = () => $('board-modal').classList.add('hidden');
 
 paintWallet();
 
-// boot: try to restore an in-progress room. The saved code must be known
-// BEFORE the socket opens, so the Worker routes us to the right object.
-try {
-  const saved = JSON.parse(localStorage.getItem('uno-adda-session') || 'null');
-  if (saved && saved.code) routeCode = saved.code;
-} catch { /* nothing saved */ }
-connect(tryRestore);
+// ------------------------------------------------------------ auth gate & profile screen
+// Playing requires an account: on load, a stored session token is checked
+// with GET /api/auth/me; without one (or on a 401) the auth screen is the
+// first thing shown and no socket is opened.
+function showAuth() {
+  for (const v of ['home', 'lobby', 'game']) $('view-' + v).classList.add('hidden');
+  $('view-auth').classList.remove('hidden');
+  document.body.dataset.view = 'auth';
+}
+function setAuthTab(which) {
+  $('tab-login').classList.toggle('active', which === 'login');
+  $('tab-signup').classList.toggle('active', which === 'signup');
+  $('auth-panel-login').classList.toggle('hidden', which !== 'login');
+  $('auth-panel-signup').classList.toggle('hidden', which !== 'signup');
+  $('auth-error').textContent = '';
+}
+$('tab-login').onclick = () => setAuthTab('login');
+$('tab-signup').onclick = () => setAuthTab('signup');
+
+function authFail(res, fallback) {
+  $('auth-error').textContent = (res.data && res.data.error) || fallback;
+}
+async function doLogin() {
+  const res = await apiPost('/api/auth/login', {
+    phone: $('auth-login-phone').value.trim(),
+    password: $('auth-login-pass').value,
+  });
+  if (res.ok && res.data && res.data.token) return afterAuth(res.data);
+  authFail(res, 'Login failed — check your number and password.');
+}
+async function doSignup() {
+  if ($('auth-pass').value !== $('auth-pass2').value) {
+    $('auth-error').textContent = 'Passwords do not match';
+    return;
+  }
+  const res = await apiPost('/api/auth/signup', {
+    name: $('auth-name').value.trim(),
+    phone: $('auth-phone').value.trim(),
+    password: $('auth-pass').value,
+  });
+  if (res.ok && res.data && res.data.token) return afterAuth(res.data);
+  authFail(res, 'Could not create the account — please check the details.');
+}
+$('btn-login').onclick = doLogin;
+$('btn-signup').onclick = doSignup;
+$('auth-login-pass').addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+$('auth-pass2').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSignup(); });
+
+function afterAuth(data) {
+  sessionToken = data.token;
+  localStorage.setItem('uno-adda-session', sessionToken);
+  account = data.profile;
+  syncFromAccount();
+  $('view-auth').classList.add('hidden');
+  showView('home');
+  startSocket();
+  toast('Welcome, ' + account.name + '! 🎉');
+}
+
+// Pull the account's coins + cumulative stats into the local paint caches.
+function syncFromAccount() {
+  if (!account) return;
+  wallet.balance = account.coins;
+  profile.wins = account.wins;
+  profile.coinsWon = account.coinsWon;
+  if (profile.avatar == null && Number.isInteger(account.avatar)) profile.avatar = account.avatar;
+  saveWallet();
+  saveProfile();
+  paintWallet();
+  paintProfileChip();
+}
+
+// The saved room code must be known BEFORE the socket opens, so the
+// Worker routes us to the right Durable Object.
+function startSocket() {
+  try {
+    const saved = JSON.parse(localStorage.getItem('uno-adda-room') || 'null');
+    if (saved && saved.code) routeCode = saved.code;
+  } catch { /* nothing saved */ }
+  connect(tryRestore);
+}
+
+// Local-only logout cleanup (also used when the server says the session
+// is gone). The error toast that triggered it carries the explanation.
+function forceLogout() {
+  if (snap) leaveRoom();
+  sessionToken = null;
+  account = null;
+  localStorage.removeItem('uno-adda-session');
+  localStorage.removeItem('uno-adda-room');
+  $('profile-modal').classList.add('hidden');
+  showAuth();
+}
+async function doLogout() {
+  try { await apiPost('/api/auth/logout'); } catch { /* local cleanup happens anyway */ }
+  forceLogout();
+  toast('Logged out — see you soon!');
+}
+$('btn-logout').onclick = doLogout;
+
+// ------------------------------------------------------------ profile screen
+function openProfile() {
+  if (!account) return;
+  paintProfile();
+  $('profile-modal').classList.remove('hidden');
+}
+function paintProfile() {
+  if (!account) return;
+  paintAvatarEl($('profile-photo'), 'profile-photo av', { photo: account.photo, avatar: myAvatar() }, 0);
+  $('profile-name').value = account.name;
+  $('profile-id').textContent = 'ID: ' + account.playerId;
+  $('profile-phone').textContent = account.phone;
+  $('stat-matches').textContent = account.matches;
+  $('stat-wins').textContent = account.wins;
+  $('stat-winrate').textContent = (account.matches ? Math.round((account.wins / account.matches) * 100) : 0) + '%';
+  $('stat-coins-won').textContent = account.coinsWon;
+  $('profile-coins').textContent = account.coins;
+  document.querySelectorAll('.pick-av').forEach(b => b.classList.toggle('selected', Number(b.dataset.av) === myAvatar()));
+}
+$('btn-profile-close').onclick = () => $('profile-modal').classList.add('hidden');
+$('btn-save-name').onclick = async () => {
+  const name = $('profile-name').value.trim();
+  if (name.length < 2) return toast('Name must be at least 2 characters');
+  const res = await apiPost('/api/auth/name', { name });
+  if (res.ok && res.data && res.data.profile) {
+    account = res.data.profile;
+    paintProfile();
+    paintProfileChip();
+    toast('Name saved ✓');
+  } else {
+    toast((res.data && res.data.error) || 'Could not save the name');
+  }
+};
+$('btn-photo').onclick = () => $('photo-file').click();
+$('photo-file').addEventListener('change', () => {
+  const file = $('photo-file').files && $('photo-file').files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const img = new Image();
+    img.onload = async () => {
+      try {
+        // Center-crop to a square and shrink to 256×256 JPEG (~15KB), so
+        // the photo fits the account record and every seat snapshot.
+        const c = document.createElement('canvas');
+        c.width = 256; c.height = 256;
+        const cx = c.getContext('2d');
+        const side = Math.min(img.width, img.height);
+        cx.drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, 256, 256);
+        const data = c.toDataURL('image/jpeg', 0.82);
+        const res = await apiPost('/api/auth/photo', { photo: data });
+        if (res.ok && res.data && res.data.profile) {
+          account = res.data.profile;
+          paintProfile();
+          paintProfileChip();
+          toast('📷 Photo updated!');
+        } else {
+          toast((res.data && res.data.error) || 'Photo upload failed');
+        }
+      } catch {
+        toast('Could not process that photo');
+      }
+    };
+    img.src = reader.result;
+  };
+  reader.readAsDataURL(file);
+});
+
+// ------------------------------------------------------------ boot: auth gate first
+(function boot() {
+  const token = localStorage.getItem('uno-adda-session');
+  if (!token) { showAuth(); return; }
+  sessionToken = token;
+  apiGet('/api/auth/me').then((res) => {
+    if (res.ok && res.data && res.data.playerId) {
+      account = res.data;
+      syncFromAccount();
+      $('view-auth').classList.add('hidden');
+      showView('home');
+      startSocket();
+    } else {
+      sessionToken = null;
+      localStorage.removeItem('uno-adda-session');
+      showAuth();
+    }
+  });
+})();

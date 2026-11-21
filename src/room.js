@@ -122,6 +122,7 @@ export class GameRoom {
       name: String(name || 'Player').slice(0, 20),
       isBot: !!isBot,
       avatar: validAvatar(avatar),
+      photo: null, // account profile photo (JPEG data URL) when logged in
       ready: false,
       connected: true,
       team: null,
@@ -161,6 +162,48 @@ export class GameRoom {
 
   sendError(ws, message) {
     this.sendRaw(ws, { type: 'error', message });
+  }
+
+  // ------------------------------------------------------------ accounts
+  // Create/join payloads may carry an account `session` token. When one is
+  // present it is resolved against the AccountsDO (DO-to-DO fetch); the
+  // seat then takes the account's name + photo, so a logged-in player
+  // cannot be impersonated by a hand-typed name. No token at all keeps
+  // the classic guest behavior (the product gate is client-side).
+  async resolveAccount(token) {
+    if (typeof token !== 'string' || !token || !this.env.ACCOUNTS) return null;
+    try {
+      const stub = this.env.ACCOUNTS.get(this.env.ACCOUNTS.idFromName('accounts'));
+      const res = await stub.fetch('https://accounts.internal/resolve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      });
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
+
+  // -> { account } when a valid session was sent, { guest: true } when no
+  // session was sent, { invalid: true } when one was sent but rejected.
+  async sessionIdentity(msg) {
+    if (!msg.session) return { guest: true };
+    const account = await this.resolveAccount(msg.session);
+    return account ? { account } : { invalid: true };
+  }
+
+  // Stamp a seat with the resolved account identity. The payload avatar
+  // (the client's character picker) still wins for this session; the
+  // account avatar is the fallback.
+  applyIdentity(seat, msg, account) {
+    seat.name = String(account.name || seat.name).slice(0, 20);
+    seat.photo = account.photo || null;
+    if (validAvatar(msg.avatar) === null) {
+      const fallback = validAvatar(account.avatar);
+      if (fallback !== null) seat.avatar = fallback;
+    }
   }
 
   // ------------------------------------------------------------ room lifecycle
@@ -236,6 +279,7 @@ export class GameRoom {
       seats: room.seats.map((s, i) => ({
         id: s.id, name: s.name, isBot: s.isBot, ready: s.ready, connected: s.connected, inVoice: !!s.inVoice,
         avatar: s.avatar != null ? s.avatar : i % 4,
+        photo: s.photo || null,
         team: s.team, score: room.scores[s.id] || 0,
         cardCount: g ? g.hands[s.id].length : 0,
         isCurrent: g ? G.currentSeatId(g) === s.id : false,
@@ -323,7 +367,7 @@ export class GameRoom {
     const currentId = g.phase === 'firstColor' ? g.seats[0] : G.currentSeatId(g);
     const current = room.seats.find((s) => s.id === currentId);
     if (current && current.isBot) {
-      this.pendingBotAt = Date.now() + 750 + Math.random() * 800;
+      this.pendingBotAt = Date.now() + 350 + Math.random() * 350;
     }
     if (g.unoSuspect) {
       if (!this.nextCatchAt) this.nextCatchAt = Date.now() + 1500;
@@ -471,7 +515,10 @@ export class GameRoom {
     switch (msg.type) {
       case 'create_bot_game': {
         if (this.room) return this.sendError(ws, 'Leave this room first');
+        const ident = await this.sessionIdentity(msg);
+        if (ident.invalid) return this.sendError(ws, 'Session expired — please log in again');
         const seat = this.makeSeat(msg.name, false, msg.avatar);
+        if (ident.account) this.applyIdentity(seat, msg, ident.account);
         seat.ready = true;
         const room = this.makeRoom(seat, 'classic', msg.rules || {}, { quick: !!msg.quick, bet: msg.bet });
         this.bindSocket(ws, seat);
@@ -493,7 +540,10 @@ export class GameRoom {
       }
       case 'create_room': {
         if (this.room) return this.sendError(ws, 'Leave this room first');
+        const ident = await this.sessionIdentity(msg);
+        if (ident.invalid) return this.sendError(ws, 'Session expired — please log in again');
         const seat = this.makeSeat(msg.name, false, msg.avatar);
+        if (ident.account) this.applyIdentity(seat, msg, ident.account);
         const room = this.makeRoom(seat, msg.mode, msg.rules || {});
         this.bindSocket(ws, seat);
         return this.afterChange([]);
@@ -502,6 +552,8 @@ export class GameRoom {
         const room = this.room;
         const code = String(msg.code || '').toUpperCase().trim();
         if (!room || room.code !== code) return this.sendError(ws, 'Room not found — check the code');
+        const ident = await this.sessionIdentity(msg);
+        if (ident.invalid) return this.sendError(ws, 'Session expired — please log in again');
         if (msg.token) {
           const existing = room.seats.find((s) => s.token === msg.token);
           if (existing && !existing.isBot) {
@@ -509,12 +561,14 @@ export class GameRoom {
             if (msg.name) existing.name = String(msg.name).slice(0, 20);
             const av = validAvatar(msg.avatar);
             if (av !== null) existing.avatar = av;
+            if (ident.account) this.applyIdentity(existing, msg, ident.account);
             return this.afterChange([]);
           }
         }
         if (room.status !== 'waiting') return this.sendError(ws, 'That game has already started');
         if (room.seats.length >= 4) return this.sendError(ws, 'That room is full');
         const seat = this.makeSeat(msg.name, false, msg.avatar);
+        if (ident.account) this.applyIdentity(seat, msg, ident.account);
         room.seats.push(seat);
         room.scores[seat.id] = 0;
         this.bindSocket(ws, seat);

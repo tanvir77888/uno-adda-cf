@@ -15,6 +15,53 @@
 
 <button id="btn-sound" class="btn-sound" title="Sound on/off" aria-label="Toggle sound">🔊</button>
 
+<!-- ======================= AUTH ======================= -->
+<section id="view-auth" class="view hidden">
+  <div class="brand">
+    <div class="brand-cards" aria-hidden="true">
+      <span class="mini-card red">7</span><span class="mini-card blue">2</span><span class="mini-card green">5</span><span class="mini-card yellow">9</span>
+    </div>
+    <h1 class="logo"><span class="logo-uno">UNO</span> <span class="logo-adda">Adda</span></h1>
+    <p class="tagline">The classic card game — free, with friends or bots.</p>
+  </div>
+
+  <div class="panel auth-card">
+    <div class="auth-tabs">
+      <button id="tab-login" class="auth-tab active">Log in</button>
+      <button id="tab-signup" class="auth-tab">Create account</button>
+    </div>
+
+    <div id="auth-panel-login">
+      <label class="field"><span class="field-label">Mobile number</span>
+        <input id="auth-login-phone" type="tel" inputmode="numeric" maxlength="11" placeholder="01712345678" autocomplete="tel">
+      </label>
+      <label class="field"><span class="field-label">Password</span>
+        <input id="auth-login-pass" type="password" placeholder="Your password" autocomplete="current-password">
+      </label>
+      <button id="btn-login" class="btn primary big">Log in &amp; Play</button>
+    </div>
+
+    <div id="auth-panel-signup" class="hidden">
+      <label class="field"><span class="field-label">Your name</span>
+        <input id="auth-name" type="text" maxlength="20" placeholder="e.g. Tanvir" autocomplete="name">
+      </label>
+      <label class="field"><span class="field-label">Mobile number</span>
+        <input id="auth-phone" type="tel" inputmode="numeric" maxlength="11" placeholder="01712345678" autocomplete="tel">
+      </label>
+      <label class="field"><span class="field-label">Password (6+ characters)</span>
+        <input id="auth-pass" type="password" placeholder="Pick a password" autocomplete="new-password">
+      </label>
+      <label class="field"><span class="field-label">Confirm password</span>
+        <input id="auth-pass2" type="password" placeholder="Same password again" autocomplete="new-password">
+      </label>
+      <button id="btn-signup" class="btn primary big">Create account &amp; Play</button>
+    </div>
+
+    <p id="auth-error" class="error"></p>
+    <p class="muted auth-note">Free forever. Your mobile number is your login and you get your own Player ID — no SMS, no codes, just a password. Coins are play money, worth nothing.</p>
+  </div>
+</section>
+
 <!-- ======================= HOME ======================= -->
 <section id="view-home" class="view">
   <div class="brand">
@@ -25,11 +72,11 @@
     <p class="tagline">The classic card game — free, with friends or bots.</p>
   </div>
 
-  <label class="field name-field"><span class="field-label">Your name <span class="muted">(tap the character to change it)</span></span>
-    <span class="name-chip"><span id="name-avatar" class="name-avatar av av0" title="Choose your character"></span>
-      <input id="in-name" type="text" maxlength="20" placeholder="e.g. Tanvir" autocomplete="off">
-    </span>
-  </label>
+  <button id="profile-chip" class="name-chip" title="Open your profile">
+    <span id="name-avatar" class="name-avatar av av0"></span>
+    <span class="chip-text"><b id="profile-chip-name">Player</b><span id="profile-chip-id" class="muted">ID: —</span></span>
+    <span class="chip-edit">Profile ›</span>
+  </button>
 
   <div class="wallet-row">
     <span class="coin-chip" title="Your coins — free play money, just for fun"><img class="coin-ic" src="art/coin.webp" alt=""><span class="coin-balance">500</span></span>
@@ -93,7 +140,8 @@
       <li><b>UNO:</b> playing down to one card? Tap the UNO button or you can be caught — caught means drawing 2 penalty cards.</li>
       <li><b>All Wild (optional):</b> every card plays on everything. Action effects still apply.</li>
       <li><b>Scoring:</b> win a round to score the value of everyone's leftover cards — numbers at face value, action cards 20, Wilds 50. First to 500 takes the match.</li>
-      <li><b>Quick Match:</b> a single round against 3 bots for a coin stake — win the round, take the pot (stake × 4). Coins are free play money that lives in your browser; the daily gift refills them.</li>
+      <li><b>Quick Match:</b> a single round against 3 bots for a coin stake — win the round, take the pot (stake × 4). Coins are free play money kept in your account; the daily gift refills them.</li>
+      <li><b>Your account:</b> everyone plays with a free account — your mobile number is your login, and your Player ID (like ID: 1007) is yours forever. Your coins, wins and photo live in your profile: tap your name chip at the top to open it.</li>
       <li>You have <b>30 seconds</b> per turn. Run out and you draw automatically.</li>
     </ul>
   </details>
@@ -229,17 +277,39 @@
   </div>
 </div>
 
-<!-- avatar picker -->
-<div id="avatar-modal" class="modal hidden">
-  <div class="modal-box">
-    <h3>Choose your character</h3>
+<!-- profile -->
+<div id="profile-modal" class="modal hidden">
+  <div class="modal-box profile-box">
+    <div id="profile-photo" class="profile-photo av av0"></div>
+    <label class="field profile-name-field"><span class="field-label">Display name</span>
+      <span class="profile-name-row">
+        <input id="profile-name" type="text" maxlength="20" autocomplete="off">
+        <button id="btn-save-name" class="btn small primary">Save</button>
+      </span>
+    </label>
+    <p class="profile-meta"><span id="profile-id">ID: —</span> · <span id="profile-phone"></span></p>
+    <div class="profile-stats">
+      <div><b id="stat-matches">0</b><span>Matches</span></div>
+      <div><b id="stat-wins">0</b><span>Wins</span></div>
+      <div><b id="stat-winrate">0%</b><span>Win rate</span></div>
+      <div><b id="stat-coins-won">0</b><span>Coins won</span></div>
+    </div>
+    <p class="profile-coins">Balance
+      <span class="coin-chip"><img class="coin-ic" src="art/coin.webp" alt=""><span id="profile-coins">0</span></span>
+    </p>
+    <h4 class="profile-h">Character <span class="muted">(shown when you have no photo)</span></h4>
     <div class="avatar-grid">
       <button class="pick-av" data-av="0"><span class="avatar av0"></span></button>
       <button class="pick-av" data-av="1"><span class="avatar av1"></span></button>
       <button class="pick-av" data-av="2"><span class="avatar av2"></span></button>
       <button class="pick-av" data-av="3"><span class="avatar av3"></span></button>
     </div>
-    <button id="btn-avatar-close" class="btn">Done</button>
+    <button id="btn-photo" class="btn">📷 Change photo</button>
+    <input id="photo-file" type="file" accept="image/*" class="hidden">
+    <div class="profile-actions">
+      <button id="btn-logout" class="btn danger">Log out</button>
+      <button id="btn-profile-close" class="btn primary">Done</button>
+    </div>
   </div>
 </div>
 

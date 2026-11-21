@@ -11,8 +11,9 @@
  */
 import { GameRoom } from './room.js';
 import { LeaderboardDO } from './leaderboard.js';
+import { AccountsDO } from './accounts.js';
 
-export { GameRoom, LeaderboardDO };
+export { GameRoom, LeaderboardDO, AccountsDO };
 
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
@@ -34,6 +35,12 @@ export default {
 
     if (url.pathname === '/api/leaderboard') {
       const stub = env.BOARD.get(env.BOARD.idFromName('global'));
+      return stub.fetch(request);
+    }
+
+    // Accounts (singleton DO): auth, wallet and stats APIs.
+    if (url.pathname.startsWith('/api/auth/') || url.pathname.startsWith('/api/wallet/') || url.pathname.startsWith('/api/stats/')) {
+      const stub = env.ACCOUNTS.get(env.ACCOUNTS.idFromName('accounts'));
       return stub.fetch(request);
     }
 
