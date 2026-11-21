@@ -403,7 +403,7 @@ export class GameRoom {
     const currentId = g.phase === 'firstColor' ? g.seats[0] : G.currentSeatId(g);
     const current = room.seats.find((s) => s.id === currentId);
     if (current && current.isBot) {
-      this.pendingBotAt = Date.now() + 350 + Math.random() * 350;
+      this.pendingBotAt = Date.now() + 120 + Math.random() * 180;
     }
     if (g.unoSuspect) {
       if (!this.nextCatchAt) this.nextCatchAt = Date.now() + 1500;
