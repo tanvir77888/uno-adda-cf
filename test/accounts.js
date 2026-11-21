@@ -11,6 +11,10 @@
  *   WS: a bot game created WITH a session carries the account name +
  *   photo (payload avatar still wins); an invalid session is rejected ->
  *   logout kills the session.
+ *   Regression (2026-11-21 live freeze): in a session-created bot game
+ *   with a max-size photo, the human plays and at least two bot turns
+ *   complete afterwards, and the 30s turn timeout fires for an idle
+ *   human — the DO alarm chain must survive the session path.
  * Exits non-zero on the first failed run summary.
  */
 import http from 'node:http';
@@ -85,6 +89,7 @@ const PHONE2 = '017' + String(Number(stamp) + 1).padStart(8, '0');
 const JPEG = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAUAQEAAAAAAAAAAAAAAAAAAAAA/8QAFBEBAAAAAAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AvwH/2Q==';
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 const BIG_JPEG = 'data:image/jpeg;base64,' + 'A'.repeat(60000); // ~45KB decoded
+const MAX_JPEG = 'data:image/jpeg;base64,' + 'A'.repeat(54000); // ~40.5KB decoded — just under the cap, like a real phone photo
 
 async function main() {
   try {
@@ -193,6 +198,102 @@ async function main() {
     check('guest seat keeps payload name/avatar, photo null', gme.name === 'Guest Player' && gme.avatar === 3 && gme.photo === null,
       `name=${gme.name} avatar=${gme.avatar} photo=${gme.photo}`);
     guest.close();
+
+    // ------------------------------------------ regression: session game timing chain
+    // A logged-in player's bot game must keep its timing chain alive:
+    // after the human plays, the bots take their turns (DO alarm), and
+    // the 30s turn timeout fires for an idle human. (Live bug 2026-11-21:
+    // a session-created Classic game froze on the first bot's turn — no
+    // bot move, no timeout, as if no alarm was armed after the play.)
+    r = await request('POST', '/api/auth/photo', { photo: MAX_JPEG }, loginToken);
+    check('max-size photo upload ok (regression setup)', r.status === 200 && r.body.profile && r.body.profile.photo === MAX_JPEG, 'status=' + r.status);
+
+    const currentOf = (s) => s && s.seats ? s.seats.find(x => x.isCurrent) : null;
+
+    // --- the human plays, then at least two bot turns must complete
+    const play = new Client();
+    await play.open('/ws');
+    play.send({ type: 'create_bot_game', name: 'Not My Name', avatar: 1, botCount: 2, rules: {}, session: loginToken });
+    await play.waitFor(s => s.room.status === 'playing' && s.game, 5000, 'session bot game (bot-chain regression)');
+    {
+      const myId = play.latest.you.seatId;
+      let actedAt = 0;
+      let actedKey = '';
+      let botTurns = 0;
+      let returnedToMe = false;
+      let lastCurrentId = null;
+      const end = Date.now() + 30000;
+      while (Date.now() < end) {
+        const s = play.latest;
+        if (s && s.game) {
+          const cur = currentOf(s);
+          if (cur && cur.id !== lastCurrentId) {
+            if (actedAt && cur.isBot) botTurns++;
+            if (actedAt && cur.id === myId) returnedToMe = true;
+            lastCurrentId = cur.id;
+          }
+          if (s.room.status === 'roundEnd') break;
+          if (botTurns >= 2 && returnedToMe) break;
+          const g = s.game;
+          const key = s.seats.map(x => x.cardCount).join(',') + '|' + (g.topCard ? g.topCard.id : '') + '|' + s.seats.findIndex(x => x.isCurrent) + '|' + g.phase + '|' + (g.drewCardId || '');
+          if (g.youMustPickColor) {
+            if (actedKey !== key) { actedKey = key; play.send({ type: 'pick_color', color: 'red' }); if (!actedAt) actedAt = Date.now(); }
+          } else if (g.isYourTurn && actedKey !== key) {
+            actedKey = key;
+            if (g.legalCardIds && g.legalCardIds.length) {
+              const cardId = g.legalCardIds[0];
+              const card = g.yourHand.find(c => c.id === cardId);
+              const m = { type: 'play_card', cardId, callUno: g.yourHand.length === 2 };
+              if (card && card.color === 'wild') m.chosenColor = 'red';
+              play.send(m);
+            } else if (g.drewCardId) {
+              play.send({ type: 'pass' });
+            } else {
+              play.send({ type: 'draw_card' });
+            }
+            if (!actedAt) actedAt = Date.now();
+          }
+        }
+        await sleep(60);
+      }
+      check('session game: human action accepted', actedAt > 0);
+      check('session game: at least two bot turns complete after the human plays', botTurns >= 2, 'botTurns=' + botTurns);
+      check('session game: turn returns to the human (bot chain alive)', returnedToMe || (play.latest && play.latest.room.status === 'roundEnd'),
+        'status=' + (play.latest && play.latest.room.status));
+    }
+    play.close();
+
+    // --- an idle human in a session game is moved by the 30s timeout
+    const idle = new Client();
+    await idle.open('/ws');
+    idle.send({ type: 'create_bot_game', name: 'Not My Name', avatar: 0, botCount: 1, rules: {}, session: loginToken });
+    await idle.waitFor(s => s.room.status === 'playing' && s.game, 5000, 'session bot game (timeout regression)');
+    {
+      const myId = idle.latest.you.seatId;
+      // Setup only: resolve a pending first-color pick, then wait until
+      // it is my turn in the playing phase. After that: total idleness.
+      const setupEnd = Date.now() + 15000;
+      let myTurn = false;
+      while (Date.now() < setupEnd && !myTurn) {
+        const s = idle.latest;
+        if (s && s.game) {
+          if (s.game.youMustPickColor) idle.send({ type: 'pick_color', color: 'red' });
+          else if (s.game.isYourTurn && s.game.phase === 'playing') myTurn = true;
+        }
+        await sleep(80);
+      }
+      check('timeout regression: reached the human turn', myTurn);
+      let timeoutSeen = false;
+      const idleEnd = Date.now() + 40000;
+      while (Date.now() < idleEnd && !timeoutSeen) {
+        for (const s of idle.states) {
+          if ((s.events || []).some(e => e.type === 'timeout' && e.seatId === myId)) { timeoutSeen = true; break; }
+        }
+        if (!timeoutSeen) await sleep(150);
+      }
+      check('session game: the 30s turn timeout fires for an idle human', timeoutSeen);
+    }
+    idle.close();
 
     // ---------------------------------------------------------- rescue rules (account 2)
     r = await request('POST', '/api/auth/signup', { phone: PHONE2, password: 'secret2', name: 'Broke Player' });

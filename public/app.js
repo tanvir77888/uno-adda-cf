@@ -19,9 +19,24 @@ let chatSeen = { lobby: 0, game: 0 };
 // by room code in the socket path (/ws/<CODE>). Creates use plain /ws and
 // the Worker assigns a fresh code; joins/restores must set routeCode first.
 let routeCode = null;
+let wsRoute; // the routeCode the live socket was actually opened for
 function connect(onOpen) {
-  if (ws && ws.readyState <= 1) { if (onOpen) onOpen(); return; }
+  if (ws && ws.readyState <= 1 && wsRoute === routeCode) { if (onOpen) onOpen(); return; }
+  if (ws) {
+    // The live socket points at a DIFFERENT room's Durable Object than the
+    // one we need now — e.g. the boot socket startSocket() opened on plain
+    // /ws before the user typed a friend's code. A join sent over it lands
+    // on an empty object and comes back "Room not found", so close it
+    // quietly (handlers detached: no reconnect toast, no stale sends) and
+    // open a fresh socket to the right object.
+    const old = ws;
+    ws = null;
+    old.onopen = old.onmessage = old.onclose = null;
+    try { old.close(); } catch { /* already gone */ }
+  }
+  wsRoute = routeCode;
   ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + (routeCode ? '/ws/' + routeCode : '/ws'));
+  ws.onerror = () => {}; // a dying socket reports through onclose; never let it throw
   ws.onopen = () => {
     if (onOpen) onOpen();
     if (voice.joined && voice.rejoinPending) { // socket dropped mid-voice: re-announce so peers re-offer
@@ -85,7 +100,7 @@ $('btn-wild').onclick = () => connect(() => send({
   botCount: parseInt($('in-bots-wild').value, 10), rules: { stacking: true, challenge: true, allWild: true },
 }));
 $('btn-create').onclick = () => connect(() => send({
-  type: 'create_room', name: myName(), avatar: profile.avatar, session: sessionToken, mode: $('in-mode').value, rules: readRules('room-toggles'),
+  type: 'create_room', name: myName(), avatar: profile.avatar, session: sessionToken, mode: $('in-mode').value, maxSeats: parseInt($('in-seats').value, 10) || 4, rules: readRules('room-toggles'),
 }));
 $('btn-join').onclick = () => {
   const code = $('in-code').value.trim().toUpperCase();
@@ -143,7 +158,8 @@ function renderLobby(msg) {
   $('lobby-code').textContent = msg.room.code;
   const r = msg.room.rules;
   $('lobby-meta').textContent =
-    (msg.room.mode === '2v2' ? '2v2 Teams' : 'Classic') +
+    (msg.room.mode === '2v2' ? 'Team Mode' : 'Classic') +
+    ' · Seats ' + msg.seats.length + '/' + (msg.room.maxSeats || 4) +
     ' · Stacking ' + (r.stacking ? 'on' : 'off') +
     ' · Challenge ' + (r.challenge ? 'on' : 'off') +
     ' · All Wild ' + (r.allWild ? 'on' : 'off') +
@@ -173,6 +189,11 @@ $('btn-leave-game').onclick = leaveRoom;
 function leaveRoom() {
   leaveVoice(false);
   send({ type: 'leave' });
+  // cancel any running round intro — its timers must not fire into the lobby
+  introState = null;
+  window.__intro = null;
+  $('view-game').classList.remove('intro-on');
+  document.querySelectorAll('.shuffle-fx').forEach(el => el.remove());
   routeCode = null;
   quick = null;
   localStorage.removeItem('uno-adda-room');
@@ -188,21 +209,28 @@ function renderGame(msg) {
 
   $('game-mode-label').textContent = msg.room.quick
     ? `⚡ Quick Match · stake ${msg.room.bet} · winner takes the pot`
-    : (msg.room.mode === '2v2' ? '👥 2v2 Teams' : '🎮 Classic') + ` · Round ${msg.room.roundNo || 1}`;
+    : (msg.room.mode === '2v2' ? '👥 Team Mode' : '🎮 Classic') + ` · Round ${msg.room.roundNo || 1}`;
 
-  // opponents
+  // opponents — up to 3 get the classic ring positions; more switch the
+  // strip to compact chips so an 11-opponent table stays readable.
+  const oppCount = msg.seats.filter(s => !s.isYou).length;
+  $('opponents').classList.toggle('many', oppCount > 3);
   $('opponents').innerHTML = msg.seats.filter(s => !s.isYou).map(s => `
     <div class="opp ${s.isCurrent ? 'current' : ''} ${s.connected ? '' : 'disc'}" data-voice-mark="${s.id}">
       ${avatarHtml(s, msg.seats.indexOf(s))}
       <div><b>${esc(s.name)}</b>${s.isBot ? ' 🤖' : ''}</div>
       <div class="muted">${s.cardCount} cards · ${s.score} pts${s.team ? ' · Team ' + s.team.toUpperCase() : ''}</div>
-      <div class="backs">${backsHtml(Math.min(s.cardCount, 7))}</div>
+      <div class="backs">${introState ? (introState.dealt[s.id] ? backsHtml(Math.min(s.cardCount, introState.dealt[s.id])) : '') : backsHtml(Math.min(s.cardCount, 7))}</div>
       ${g && g.unoSuspect === s.id ? `<button class="catch" data-catch="${s.id}">CATCH!</button>` : ''}
     </div>`).join('');
   document.querySelectorAll('[data-catch]').forEach(b => b.onclick = () => send({ type: 'catch_uno', targetSeatId: b.dataset.catch }));
 
-  // piles
+  // piles — the top card rests at its own slight tilt; during the round
+  // intro the flip stays hidden until the deal completes
   $('discard-pile').innerHTML = g ? cardHtml(g.topCard, false) : '';
+  const topEl = $('discard-pile').querySelector('.card');
+  if (topEl && g) topEl.style.transform = 'rotate(' + tiltFor(g.topCard.id) + 'deg)';
+  $('discard-pile').style.visibility = introState ? 'hidden' : '';
   $('draw-count').textContent = g ? g.drawPileCount + ' cards' : '';
   const ci = $('color-indicator');
   if (g && g.currentColor) { ci.style.background = 'var(--' + g.currentColor + ')'; ci.textContent = COLOR_NAMES[g.currentColor]; }
@@ -235,6 +263,12 @@ function renderGame(msg) {
     document.querySelectorAll('#my-hand .card').forEach(el => {
       el.onclick = () => onCardTap(el.dataset.id, legal.has(el.dataset.id));
     });
+    // during the intro, my cards stay face-down until their deal flight lands
+    if (introState) {
+      document.querySelectorAll('#my-hand .card').forEach((el, i) => {
+        if (i >= introState.revealedMe) el.classList.add('intro-hidden');
+      });
+    }
   }
   startTimerBar(g);
 }
@@ -275,6 +309,7 @@ function cardLabel(card) {
 }
 
 function onCardTap(cardId, playable) {
+  if (introState) return; // the shuffle/deal intro owns the table
   if (!snap || !snap.game || !snap.game.isYourTurn) return;
   if (!playable) { toast('That card does not match — match the color, number or symbol'); return; }
   const card = snap.game.yourHand.find(c => c.id === cardId);
@@ -286,10 +321,11 @@ function doPlay(cardId, chosenColor) {
   unoArmed = false;
 }
 
-$('draw-pile').onclick = () => { if (snap && snap.game && snap.game.isYourTurn) send({ type: 'draw_card' }); };
-$('btn-pass').onclick = () => send({ type: 'pass' });
-$('btn-challenge').onclick = () => send({ type: 'challenge' });
+$('draw-pile').onclick = () => { if (!introState && snap && snap.game && snap.game.isYourTurn) send({ type: 'draw_card' }); };
+$('btn-pass').onclick = () => { if (!introState) send({ type: 'pass' }); };
+$('btn-challenge').onclick = () => { if (!introState) send({ type: 'challenge' }); };
 $('btn-uno').onclick = () => {
+  if (introState) return;
   unoArmed = true;
   send({ type: 'call_uno' });
   toast('UNO declared!');
@@ -303,6 +339,7 @@ function openColorPicker(purpose) {
 }
 document.querySelectorAll('.color-btn').forEach(b => b.onclick = () => {
   $('color-modal').classList.add('hidden');
+  if (introState) return;
   if (colorPurpose === 'first') send({ type: 'pick_color', color: b.dataset.color });
   else if (pendingWildCard) { doPlay(pendingWildCard, b.dataset.color); pendingWildCard = null; }
 });
@@ -633,6 +670,141 @@ document.querySelectorAll('.voice-join').forEach(b => { b.onclick = joinVoice; }
 document.querySelectorAll('.voice-mute').forEach(b => { b.onclick = toggleMute; });
 document.querySelectorAll('.voice-leave').forEach(b => { b.onclick = () => leaveVoice(true); });
 
+// ------------------------------------------------------------ round intro
+// Staged round opening, layered over the (already dealt) start snapshot:
+// the deck is visibly shuffled on the table, then cards are dealt one by
+// one — a card-back flight from the deck to every seat in turn order,
+// the player's own cards flipping face-up as they land — and only then
+// does the first turn begin. Purely presentational: the server state is
+// already final, game input is blocked while it runs (see the guards on
+// the action handlers), and it is skipped for a round that has already
+// begun (mid-round join / reconnect), which roundProgressed() detects.
+const INTRO_DEFAULTS = { shuffleMs: 1100, flightMs: 210 };
+let introState = null; // { phase, dealt: {seatId: n}, revealedMe, landed, total }
+
+function tiltFor(cardId) {
+  let h = 0;
+  const s = String(cardId || '');
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return (h % 9) - 4; // a natural, stable -4°..+4° resting tilt per card
+}
+
+function roundProgressed(msg) {
+  const g = msg.game;
+  if (!g) return true;
+  if (msg.seats.some(s => s.cardCount !== 7)) return true;
+  const playedTypes = ['played', 'drew', 'timeout', 'skipped', 'reversed', 'color_chosen', 'took_pending', 'pending', 'caught', 'challenge'];
+  return (msg.events || []).some(e => playedTypes.includes(e.type));
+}
+
+function runIntro(msg) {
+  const T = Object.assign({}, INTRO_DEFAULTS, window.UNO_INTRO_TIMING || {});
+  const total = msg.seats.length * 7;
+  const stagger = Math.max(12, Math.min(38, Math.round(1700 / Math.max(1, total))));
+  const st = introState = { phase: 'shuffle', dealt: {}, revealedMe: 0, landed: 0, total };
+  window.__intro = st;
+  $('view-game').classList.add('intro-on');
+
+  // Phase 1 — the shuffle: a riffle visual over the draw pile.
+  const pile = $('draw-pile');
+  const pr = pile ? pile.getBoundingClientRect() : null;
+  let shEl = null;
+  if (pr && pr.width) {
+    shEl = document.createElement('div');
+    shEl.className = 'shuffle-fx';
+    shEl.innerHTML = '<div class="sh-half sh-l"></div><div class="sh-half sh-r"></div><div class="card back sh-top"><span>UNO<br>Adda</span></div>';
+    shEl.style.left = pr.left + 'px';
+    shEl.style.top = pr.top + 'px';
+    shEl.style.width = pr.width + 'px';
+    shEl.style.height = pr.height + 'px';
+    document.body.appendChild(shEl);
+  }
+
+  setTimeout(() => {
+    if (shEl) shEl.remove();
+    if (introState !== st) return;
+    st.phase = 'deal';
+    try { sfx('deal'); } catch { /* sound must never break the intro */ }
+    // Phase 2 — deal one by one, round-robin in seat order.
+    const handCards = Array.from(document.querySelectorAll('#my-hand .card'));
+    let seq = 0;
+    for (let round = 0; round < 7; round++) {
+      for (const s of msg.seats) {
+        const delay = seq * stagger;
+        seq++;
+        let toRect = null;
+        if (s.isYou) {
+          const el = handCards[round];
+          if (el) toRect = el.getBoundingClientRect();
+        } else {
+          const el = document.querySelector('#opponents .opp[data-voice-mark="' + s.id + '"]');
+          if (el) toRect = cardRectAround(el.getBoundingClientRect(), 40, 58);
+        }
+        dealFly(pr, toRect, delay, T.flightMs, () => {
+          if (introState !== st) return;
+          st.landed++;
+          if (s.isYou) {
+            st.revealedMe = Math.max(st.revealedMe, round + 1);
+            const el = handCards[round];
+            if (el) el.classList.remove('intro-hidden');
+          } else {
+            st.dealt[s.id] = (st.dealt[s.id] || 0) + 1;
+          }
+          if (st.landed >= st.total) finishIntro(st);
+        });
+      }
+    }
+    // Layout-less environments still complete on the same schedule.
+    setTimeout(() => finishIntro(st), total * stagger + T.flightMs + 400);
+  }, T.shuffleMs);
+}
+
+function finishIntro(st) {
+  if (introState !== st) return;
+  st.phase = 'done';
+  introState = null;
+  window.__intro = st;
+  $('view-game').classList.remove('intro-on');
+  if (snap) renderGame(snap);
+}
+
+// One card-back flight from the deck to a seat. State progression is
+// driven by timers (never by the animation itself), so a missing or
+// interrupted animation can never stall the intro.
+function dealFly(fromRect, toRect, delayMs, flightMs, onLand) {
+  let done = false;
+  const land = () => { if (!done) { done = true; if (onLand) onLand(); } };
+  if (fromRect && fromRect.width && toRect && toRect.width) {
+    const wrap = document.createElement('div');
+    wrap.className = 'fly-wrap deal-fx';
+    wrap.innerHTML = '<div class="card back"><span>UNO<br>Adda</span></div>';
+    wrap.style.left = fromRect.left + 'px';
+    wrap.style.top = fromRect.top + 'px';
+    wrap.style.width = fromRect.width + 'px';
+    wrap.style.height = fromRect.height + 'px';
+    document.body.appendChild(wrap);
+    const dx = (toRect.left + toRect.width / 2) - (fromRect.left + fromRect.width / 2);
+    const dy = (toRect.top + toRect.height / 2) - (fromRect.top + fromRect.height / 2);
+    const scale = toRect.width / fromRect.width;
+    if (wrap.animate) {
+      try {
+        const anim = wrap.animate([
+          { transform: 'translate(0px, 0px) rotate(0deg) scale(1)' },
+          { transform: `translate(${dx}px, ${dy}px) rotate(6deg) scale(${scale})` },
+        ], { duration: flightMs, delay: delayMs, easing: 'cubic-bezier(.3,.7,.3,1)', fill: 'backwards' });
+        anim.onfinish = () => { wrap.remove(); land(); };
+      } catch { setTimeout(() => { wrap.remove(); land(); }, delayMs + flightMs); }
+    } else {
+      wrap.style.transitionDuration = flightMs + 'ms';
+      setTimeout(() => { wrap.style.transform = `translate(${dx}px, ${dy}px) rotate(6deg) scale(${scale})`; }, delayMs);
+      setTimeout(() => { wrap.remove(); land(); }, delayMs + flightMs + 60);
+    }
+    setTimeout(land, delayMs + flightMs + 1500); // a lost animation never stalls the deal
+  } else {
+    setTimeout(land, delayMs + flightMs);
+  }
+}
+
 // ------------------------------------------------------------ presentation FX
 // Pure presentation: sounds, animations, confetti. Reads snapshots and
 // diffs them; never sends protocol messages and never touches game state.
@@ -674,17 +846,17 @@ function applyFxInner(msg) {
   handEl.classList.toggle('tight', count > 9 && count <= 13);
   handEl.classList.toggle('tight2', count > 13);
 
-  // fresh round dealt (we were not playing in the previous snapshot)
+  // fresh round dealt? Run the staged intro (shuffle → one-by-one deal)
+  // over the start snapshot — unless the round has already begun, which
+  // is the case for a mid-round join or a reconnect.
   const dealKey = msg.room.code + '|' + msg.room.roundNo;
-  if (fxPrev && fxPrev.room.status !== 'playing' && msg.room.status === 'playing' && fxDealKey !== dealKey) {
+  const freshRound = msg.room.status === 'playing' && fxDealKey !== dealKey &&
+    (!fxPrev || fxPrev.room.status !== 'playing' || fxPrev.room.roundNo !== msg.room.roundNo);
+  if (freshRound) {
     fxDealKey = dealKey;
-    handEl.querySelectorAll('.card').forEach((el, i) => {
-      el.classList.add('deal-in');
-      el.style.animationDelay = (i * 70) + 'ms';
-    });
-    sfx('deal');
-    return; // the deal snapshot is not a play/draw diff
+    if (!roundProgressed(msg)) { runIntro(msg); return; }
   }
+  if (introState) return; // the intro owns the table until it completes
 
   if (!pg) return;
 
@@ -702,7 +874,7 @@ function applyFxInner(msg) {
       const from = actor.isYou
         ? fxRects.hand[g.topCard.id]
         : cardRectAround(fxRects.opps[actor.id], toRect.width, toRect.height);
-      if (from) flew = flyCard(cardHtml(g.topCard, false), from, toRect, top);
+      if (from) flew = flyCard(cardHtml(g.topCard, false), from, toRect, top, { arc: true, tilt: tiltFor(g.topCard.id) });
     }
     if (!flew && top) top.classList.add('played-in');
     if (actor && !actor.isYou) markOpp(actor.id, 'acted');
@@ -782,7 +954,7 @@ function cardRectAround(rect, w, h) {
   return { left: rect.left + rect.width / 2 - w / 2, top: rect.top + rect.height / 2 - h / 2, width: w, height: h };
 }
 
-function flyCard(html, fromRect, toRect, hideEl) {
+function flyCard(html, fromRect, toRect, hideEl, opts) {
   if (!fromRect || !fromRect.width || !toRect || !toRect.width) return false;
   const wrap = document.createElement('div');
   wrap.className = 'fly-wrap';
@@ -796,8 +968,27 @@ function flyCard(html, fromRect, toRect, hideEl) {
   const dx = (toRect.left + toRect.width / 2) - (fromRect.left + fromRect.width / 2);
   const dy = (toRect.top + toRect.height / 2) - (fromRect.top + fromRect.height / 2);
   const scale = toRect.width / fromRect.width;
+  const tilt = opts && typeof opts.tilt === 'number' ? opts.tilt : 7;
+  // Played cards arc: lift off the hand, sail with a slight rotation,
+  // land on the pile with a small bounce at the card's resting tilt.
+  if (opts && opts.arc && wrap.animate) {
+    const lift = Math.min(64, Math.hypot(dx, dy) * 0.22 + 22);
+    try {
+      const anim = wrap.animate([
+        { transform: 'translate(0px, 0px) rotate(0deg) scale(1)' },
+        { transform: `translate(${dx * 0.55}px, ${dy * 0.55 - lift}px) rotate(${tilt * 0.3}deg) scale(${1 + (scale - 1) * 0.55})`, offset: 0.55 },
+        { transform: `translate(${dx}px, ${dy}px) rotate(${tilt}deg) scale(${scale * 1.06})`, offset: 0.85 },
+        { transform: `translate(${dx}px, ${dy}px) rotate(${tilt}deg) scale(${scale})`, offset: 1 },
+      ], { duration: 500, easing: 'cubic-bezier(.3,.7,.3,1)', fill: 'forwards' });
+      let cleaned = false;
+      const cleanup = () => { if (!cleaned) { cleaned = true; wrap.remove(); if (hideEl) hideEl.style.opacity = ''; } };
+      anim.onfinish = cleanup;
+      setTimeout(cleanup, 750);
+      return true;
+    } catch { /* fall through to the transition path */ }
+  }
   requestAnimationFrame(() => requestAnimationFrame(() => {
-    wrap.style.transform = `translate(${dx}px, ${dy}px) rotate(7deg) scale(${scale})`;
+    wrap.style.transform = `translate(${dx}px, ${dy}px) rotate(${tilt}deg) scale(${scale})`;
   }));
   setTimeout(() => { wrap.remove(); if (hideEl) hideEl.style.opacity = ''; }, 500);
   return true;

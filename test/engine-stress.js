@@ -71,4 +71,17 @@ for (const rules of [
     }
   }
 }
+// Big tables: 12 seats deal 84 of the 108 cards, so the draw pile runs
+// dry and the reshuffle path is exercised in nearly every round.
+for (const rules of [
+  { stacking: true, challenge: true, allWild: false },
+  { stacking: false, challenge: true, allWild: false },
+  { stacking: true, challenge: false, allWild: false },
+  { stacking: true, challenge: true, allWild: true },
+]) {
+  for (let i = 0; i < 10; i++) {
+    randomPlayRound(12, rules, `rules=${JSON.stringify(rules)} players=12`);
+    rounds++;
+  }
+}
 console.log(`ENGINE STRESS PASSED — ${rounds} full rounds finished, 108 cards conserved in every step`);

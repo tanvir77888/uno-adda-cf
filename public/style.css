@@ -340,6 +340,26 @@ body[data-view="game"] .bg-decor {
 .opp .disc { opacity: .55; }
 .opp.disc { opacity: .55; }
 
+/* big tables (5–12 seats): the ring positions give way to a compact chip
+   strip along the top of the felt — small photo/avatar + name + count,
+   two rows at most on a phone, never over the piles or the hand */
+#opponents.many {
+  display: flex; flex-wrap: wrap; justify-content: center; align-content: flex-start;
+  gap: 4px; padding: 12px 4px 0;
+}
+#opponents.many .opp {
+  position: relative; width: 62px; padding: 4px 3px 5px; border-radius: 11px; border-width: 1.5px;
+}
+#opponents.many .opp .avatar { width: 26px; height: 26px; font-size: .72rem; border-width: 2px; margin-bottom: 1px; }
+#opponents.many .opp b { font-size: .6rem; }
+#opponents.many .opp .muted { font-size: .53rem; padding: 0 4px; margin-top: 1px; }
+#opponents.many .opp .backs { display: none; }
+#opponents.many .opp.current::after { top: -11px; font-size: .65rem; }
+#opponents.many .opp .catch { top: -7px; right: -7px; font-size: .6rem; padding: 2px 6px; }
+
+/* a full 12-seat lobby list scrolls instead of pushing the actions away */
+#lobby-seats { max-height: 46vh; overflow-y: auto; }
+
 /* narrow phones: tighter pile row; side seats in a 3-opponent game go
    compact so they hug the rim instead of covering the piles */
 @media (max-width: 559px) {
@@ -635,6 +655,38 @@ body[data-view="game"] .bg-decor {
 /* card flight (FLIP clones) + wild splash */
 .fly-wrap { position: fixed; z-index: 75; pointer-events: none; transition: transform .45s cubic-bezier(.3, .7, .3, 1); will-change: transform; }
 .fly-wrap .card { width: 100%; height: 100%; }
+
+/* ---------- round intro: shuffle + one-by-one deal ---------- */
+.deal-fx { z-index: 76; }
+#my-hand .card.intro-hidden { opacity: 0; }
+.shuffle-fx { position: fixed; z-index: 76; pointer-events: none; }
+.shuffle-fx .sh-half {
+  position: absolute; top: 0; width: 54%; height: 100%; border-radius: 7px;
+  background: linear-gradient(160deg, #d33a2c, #a11f14);
+  border: 2px solid rgba(255,255,255,.85);
+  box-shadow: inset 0 0 0 3px rgba(0,0,0,.18), 0 4px 10px rgba(0,0,0,.35);
+}
+.shuffle-fx .sh-l { left: 0; animation: riffle-l .55s ease-in-out 2; }
+.shuffle-fx .sh-r { right: 0; animation: riffle-r .55s ease-in-out 2; }
+.shuffle-fx .sh-top {
+  position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0;
+  animation: sh-top-in .2s ease-out .95s forwards;
+}
+@keyframes riffle-l {
+  0% { transform: translate(0, 0) rotate(0); }
+  30% { transform: translate(-17%, -7%) rotate(-8deg); }
+  55% { transform: translate(8%, 2%) rotate(2deg); }
+  78% { transform: translate(-6%, -2%) rotate(-3deg); }
+  100% { transform: translate(0, 0) rotate(0); }
+}
+@keyframes riffle-r {
+  0% { transform: translate(0, 0) rotate(0); }
+  30% { transform: translate(17%, -7%) rotate(8deg); }
+  55% { transform: translate(-8%, 2%) rotate(-2deg); }
+  78% { transform: translate(6%, -2%) rotate(3deg); }
+  100% { transform: translate(0, 0) rotate(0); }
+}
+@keyframes sh-top-in { from { opacity: 0; transform: scale(.92); } to { opacity: 1; transform: scale(1); } }
 .wild-splash {
   position: fixed; width: 280px; height: 280px; margin: -140px 0 0 -140px;
   border-radius: 50%; z-index: 74; pointer-events: none;

@@ -67,6 +67,15 @@ export class GameRoom {
       }
       if (this.room) {
         for (const s of this.room.seats) s.connected = this.sockets.has(s.id);
+        // Register the PERSISTED deadlines exactly as saved. Do NOT
+        // re-derive them here (e.g. via schedule()): when an alarm comes
+        // due on an evicted object, the runtime instantiates the object
+        // to deliver it, and a constructor registration for a LATER time
+        // cancels that very delivery ("alarm handler canceled with
+        // requestScheduledAlarm") and defers the game by a full turn
+        // clock — or, if the registration is awaited inside
+        // blockConcurrencyWhile, wedges the object for good. A persisted
+        // deadline in the past simply delivers immediately.
         this.scheduleAlarm();
       }
     });
@@ -93,6 +102,28 @@ export class GameRoom {
       pendingBotAt: this.pendingBotAt,
       nextCatchAt: this.nextCatchAt,
     });
+  }
+
+  // The room's lifeline, run at the end of every async entry point:
+  // persist state best-effort, then re-register the alarm from the
+  // current deadlines. Neither step may throw: a throwing alarm()
+  // handler gets its alarm discarded by the runtime once retries run
+  // out, and a throwing message handler can roll back the storage
+  // writes (including the alarm registration) made earlier in the same
+  // invocation — either way the room freezes with everyone still
+  // connected. Because EVERY entry point ends here, a registration lost
+  // to a failed save heals on the very next event.
+  async persistAndArm() {
+    try {
+      await this.save();
+    } catch (e) {
+      console.log('UNO Adda: state save failed:', e && e.message);
+    }
+    try {
+      await this.armAlarm();
+    } catch (e) {
+      console.log('UNO Adda: alarm registration failed:', e && e.message);
+    }
   }
 
   async destroyRoom(notifyMessage) {
@@ -216,6 +247,9 @@ export class GameRoom {
       // Classic rooms leave both at their defaults and behave as before.
       quick: !!opts.quick,
       bet: clampBet(opts.bet),
+      // Friend rooms choose their size at creation: 2–12 seats
+      // (default 4, the original size). Bot/quick rooms ignore it.
+      maxSeats: Math.min(12, Math.max(2, Math.round(Number(opts.maxSeats) || 4))),
       rules: {
         stacking: !rules || rules.stacking !== false,
         challenge: !rules || rules.challenge !== false,
@@ -274,7 +308,7 @@ export class GameRoom {
     const g = room.game;
     const snap = {
       type: 'state',
-      room: { code: room.code, mode: room.mode, rules: room.rules, status: room.status, hostSeatId: room.hostSeatId, roundNo: room.roundNo, quick: !!room.quick, bet: room.bet || 0 },
+      room: { code: room.code, mode: room.mode, rules: room.rules, status: room.status, hostSeatId: room.hostSeatId, roundNo: room.roundNo, quick: !!room.quick, bet: room.bet || 0, maxSeats: room.maxSeats || 4 },
       you: { seatId: viewer.id, token: viewer.token },
       seats: room.seats.map((s, i) => ({
         id: s.id, name: s.name, isBot: s.isBot, ready: s.ready, connected: s.connected, inVoice: !!s.inVoice,
@@ -351,8 +385,10 @@ export class GameRoom {
   }
 
   // Mirrors the Node schedule(): every state change restarts the current
-  // player's 30s clock and (re)arms the bot move. Deadlines are timestamps;
-  // the single DO alarm is set to whichever comes first.
+  // player's 30s clock, recomputes the bot-move deadline and registers
+  // the single DO alarm at whichever deadline comes first. Deadlines are
+  // timestamps; registration is synchronous (the constructor path must
+  // never await — see the restore note in the constructor).
   schedule() {
     const room = this.room;
     this.pendingBotAt = null;
@@ -377,16 +413,35 @@ export class GameRoom {
     this.scheduleAlarm();
   }
 
-  scheduleAlarm() {
+  // The single DO alarm is always the earliest pending deadline.
+  alarmTime() {
     const times = [];
     const room = this.room;
     if (room && room.status === 'playing' && room.turnEndsAt) times.push(room.turnEndsAt);
     if (this.pendingBotAt) times.push(this.pendingBotAt);
     if (this.nextCatchAt) times.push(this.nextCatchAt);
-    if (times.length) {
-      this.ctx.storage.setAlarm(Math.min(...times));
+    return times.length ? Math.min(...times) : null;
+  }
+
+  // Synchronous registration from the current deadlines (see schedule()
+  // for why this is never awaited in constructor/schedule paths).
+  scheduleAlarm() {
+    const at = this.alarmTime();
+    if (at !== null) {
+      this.ctx.storage.setAlarm(at);
     } else {
       this.ctx.storage.deleteAlarm();
+    }
+  }
+
+  // Awaited registration, used by persistAndArm at handler boundaries
+  // (never inside blockConcurrencyWhile — see the constructor note).
+  async armAlarm() {
+    const at = this.alarmTime();
+    if (at !== null) {
+      await this.ctx.storage.setAlarm(at);
+    } else {
+      await this.ctx.storage.deleteAlarm();
     }
   }
 
@@ -426,8 +481,11 @@ export class GameRoom {
       this.afterChange(res.events || []);
     }
 
-    this.scheduleAlarm();
-    await this.save();
+    // Never let persistence fail this handler: a throwing alarm() gets
+    // its alarm discarded by the runtime once retries run out, which
+    // would freeze the room for good. persistAndArm also re-registers
+    // the alarm for whatever deadline comes next.
+    await this.persistAndArm();
   }
 
   // ------------------------------------------------------------ bots
@@ -478,7 +536,7 @@ export class GameRoom {
     } catch (e) {
       this.sendError(ws, 'Server error: ' + e.message);
     }
-    await this.save();
+    await this.persistAndArm();
   }
 
   async webSocketClose(ws) {
@@ -503,7 +561,7 @@ export class GameRoom {
     }
     this.broadcast(room);
     this.schedule();
-    await this.save();
+    await this.persistAndArm();
   }
 
   async webSocketError(ws) {
@@ -544,7 +602,7 @@ export class GameRoom {
         if (ident.invalid) return this.sendError(ws, 'Session expired — please log in again');
         const seat = this.makeSeat(msg.name, false, msg.avatar);
         if (ident.account) this.applyIdentity(seat, msg, ident.account);
-        const room = this.makeRoom(seat, msg.mode, msg.rules || {});
+        const room = this.makeRoom(seat, msg.mode, msg.rules || {}, { maxSeats: msg.maxSeats });
         this.bindSocket(ws, seat);
         return this.afterChange([]);
       }
@@ -566,7 +624,7 @@ export class GameRoom {
           }
         }
         if (room.status !== 'waiting') return this.sendError(ws, 'That game has already started');
-        if (room.seats.length >= 4) return this.sendError(ws, 'That room is full');
+        if (room.seats.length >= (room.maxSeats || 4)) return this.sendError(ws, 'That room is full');
         const seat = this.makeSeat(msg.name, false, msg.avatar);
         if (ident.account) this.applyIdentity(seat, msg, ident.account);
         room.seats.push(seat);
@@ -590,7 +648,10 @@ export class GameRoom {
         if (room.quick && room.status === 'roundEnd') return this.sendError(ws, 'Quick match is over — start a new one from the lobby');
         if (room.status === 'playing') return this.sendError(ws, 'The game is already running');
         if (room.seats.length < 2) return this.sendError(ws, 'You need at least 2 players');
-        if (room.mode === '2v2' && room.seats.length !== 4) return this.sendError(ws, '2v2 needs exactly 4 players');
+        // Team mode pairs seats by parity (see assignTeams), which
+        // generalizes to any even table: 4, 6, 8, 10 or 12 players.
+        if (room.mode === '2v2' && (room.seats.length < 4 || room.seats.length % 2 !== 0))
+          return this.sendError(ws, 'Team mode needs an even number of players (4–12)');
         if (room.seats.some((s) => !s.isBot && s.id !== room.hostSeatId && !s.ready))
           return this.sendError(ws, 'Everyone must be ready first');
         return this.startRound(room);

@@ -32,6 +32,7 @@ node test/voice-signal.js || fail=1
 node test/engine-stress.js || fail=1
 node test/v3.js || fail=1
 node test/accounts.js || fail=1
+node test/friends-e2e.js || fail=1
 node test/client-v3.js || fail=1
 
 if [ "${fail}" = "0" ]; then echo "LOCAL VERIFICATION: ALL SUITES PASSED"; else echo "LOCAL VERIFICATION: FAILURES (see above)"; fi

@@ -119,8 +119,14 @@ function makePage(opts = {}) {
         },
       });
       class FakeWebSocket {
-        constructor() { this.readyState = 1; setTimeout(() => this.onopen && this.onopen(), 0); }
-        send() {}
+        constructor() {
+          this.readyState = 1;
+          this.sent = [];
+          (window.__sockets = window.__sockets || []).push(this);
+          setTimeout(() => this.onopen && this.onopen(), 0);
+        }
+        send(data) { this.sent.push(JSON.parse(data)); }
+        deliver(obj) { if (this.onmessage) this.onmessage({ data: JSON.stringify(obj) }); }
         close() { this.readyState = 3; }
       }
       FakeWebSocket.OPEN = 1;
@@ -268,6 +274,75 @@ async function main() {
     check('profile: character pick saves', prof.avatar === 2, 'avatar=' + prof.avatar);
     check('profile: home chip avatar follows', $(dom, 'name-avatar').className.includes('av2'),
       $(dom, 'name-avatar').className);
+    dom.window.close();
+  }
+
+  // ------------------------------------------------ round intro: shuffle → deal → play
+  {
+    const dom = makePage({ token: true });
+    await sleep(150);
+    const w = dom.window;
+    w.UNO_INTRO_TIMING = { shuffleMs: 60, flightMs: 20 }; // shrink the staging for the test
+    w.Element.prototype.getBoundingClientRect = () => ({ left: 100, top: 100, width: 60, height: 84, right: 160, bottom: 184, x: 100, y: 100 });
+    const sock = w.__sockets[w.__sockets.length - 1];
+    const C = (id, color, kind, value) => ({ id, color, kind, value });
+    const seat = (id, isYou, cardCount) => ({
+      id, name: 'P-' + id, isBot: false, ready: true, connected: true, inVoice: false,
+      avatar: 0, photo: null, team: null, score: 0, cardCount, isCurrent: id === 's1', isYou: !!isYou,
+    });
+    const rules = { stacking: true, challenge: true, allWild: false, timerSec: 30 };
+    const base = {
+      type: 'state',
+      room: { code: 'TEST12', mode: 'classic', rules, status: 'waiting', hostSeatId: 's1', roundNo: 0, quick: false, bet: 0, maxSeats: 4 },
+      you: { seatId: 's1', token: 'tok1' },
+      seats: [seat('s1', true, 0), seat('s2', false, 0), seat('s3', false, 0), seat('s4', false, 0)],
+      chat: [], events: [], game: null, lastRound: null, matchWinnerSeatId: null,
+    };
+    sock.deliver(base); // lobby snapshot first (the previous state is "not playing")
+    await sleep(60);
+    const hand = [C('h1', 'red', 'number', 3), C('h2', 'green', 'number', 4), C('h3', 'blue', 'number', 6), C('h4', 'yellow', 'number', 8), C('h5', 'red', 'number', 9), C('h6', 'green', 'number', 1), C('h7', 'blue', 'number', 2)];
+    const playing = JSON.parse(JSON.stringify(base));
+    playing.room.status = 'playing';
+    playing.room.roundNo = 1;
+    playing.seats = [seat('s1', true, 7), seat('s2', false, 7), seat('s3', false, 7), seat('s4', false, 7)];
+    playing.game = {
+      phase: 'playing', topCard: C('c1', 'red', 'number', 5), drawPileCount: 79, currentColor: 'red',
+      isYourTurn: true, youMustPickColor: false, pendingDraw: 0, pendingKind: null,
+      canChallenge: false, drewCardId: null, unoSuspect: null, direction: 1,
+      yourHand: hand, legalCardIds: ['h1'],
+    };
+    sock.deliver(playing); // the round-start snapshot
+
+    await sleep(25);
+    check('intro: shuffle phase is shown at round start', !!w.__intro && w.__intro.phase === 'shuffle',
+      'phase=' + (w.__intro && w.__intro.phase));
+    check('intro: shuffle element is on the table', !!dom.window.document.querySelector('.shuffle-fx'));
+    check('intro: table is marked intro-on (input staging)', $(dom, 'view-game').classList.contains('intro-on'));
+    const firstCard = dom.window.document.querySelector('#my-hand .card');
+    if (firstCard) firstCard.click();
+    check('intro: card taps are blocked during the intro', !sock.sent.some(m => m.type === 'play_card'),
+      'sent=' + JSON.stringify(sock.sent.map(m => m.type)));
+
+    let sawDeal = false;
+    let sawFlights = 0;
+    const end = Date.now() + 4000;
+    while (Date.now() < end) {
+      if (w.__intro && w.__intro.phase === 'deal') sawDeal = true;
+      sawFlights = Math.max(sawFlights, dom.window.document.querySelectorAll('.deal-fx').length);
+      if (w.__intro && w.__intro.phase === 'done') break;
+      await sleep(15);
+    }
+    check('intro: deal phase follows the shuffle', sawDeal);
+    check('intro: deal flights are created (one per card)', sawFlights > 0, 'max .deal-fx seen=' + sawFlights);
+    check('intro: sequence completes into the play state', !!w.__intro && w.__intro.phase === 'done' && !$(dom, 'view-game').classList.contains('intro-on'),
+      'phase=' + (w.__intro && w.__intro.phase));
+    check('intro: all my cards are face-up after the deal', dom.window.document.querySelectorAll('#my-hand .card.intro-hidden').length === 0);
+    check('intro: the flipped card is revealed after the deal', $(dom, 'discard-pile').style.visibility !== 'hidden');
+    const playable = dom.window.document.querySelector('#my-hand .card.playable');
+    if (playable) playable.click();
+    await sleep(60);
+    check('intro: input works again once play begins', sock.sent.some(m => m.type === 'play_card'),
+      'sent=' + JSON.stringify(sock.sent.map(m => m.type)));
     dom.window.close();
   }
 
