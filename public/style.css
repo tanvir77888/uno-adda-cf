@@ -20,19 +20,20 @@ h1, h2, h3 { margin: 0 0 8px; }
 .muted { opacity: .75; font-size: .9em; }
 .error { color: #ffd2cc; min-height: 1.2em; font-weight: 600; text-align: center; }
 
-/* ---------- ambient background cards ---------- */
-.bg-decor { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
-.bg-card {
-  position: absolute; width: 92px; height: 130px; border-radius: 13px; opacity: .5;
-  border: 3px solid rgba(255,255,255,.13);
-  animation: floaty 9s ease-in-out infinite alternate;
+/* ---------- ambient background: illustrated art ---------- */
+.bg-decor {
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background:
+    linear-gradient(180deg, rgba(26, 6, 24, .14) 0%, rgba(16, 3, 16, .30) 55%, rgba(8, 1, 10, .58) 100%),
+    url('art/lobby-bg.webp') center / cover no-repeat;
 }
-.bg-card.c1 { --r: -14deg; left: -26px; top: 12%; background: linear-gradient(160deg, rgba(224,52,43,.5), rgba(224,52,43,.08)); }
-.bg-card.c2 { --r: 11deg; right: -30px; top: 6%; background: linear-gradient(160deg, rgba(34,119,212,.5), rgba(34,119,212,.08)); animation-delay: -2s; }
-.bg-card.c3 { --r: 7deg; left: -34px; bottom: 14%; background: linear-gradient(160deg, rgba(46,168,79,.45), rgba(46,168,79,.07)); animation-delay: -4s; }
-.bg-card.c4 { --r: -9deg; right: -24px; bottom: 22%; background: linear-gradient(160deg, rgba(246,201,14,.4), rgba(246,201,14,.06)); animation-delay: -1s; }
-.bg-card.c5 { --r: 18deg; left: 38%; top: -64px; background: linear-gradient(160deg, rgba(255,255,255,.16), rgba(255,255,255,.02)); animation-delay: -6s; }
-.bg-card.c6 { --r: -20deg; right: 30%; bottom: -70px; background: linear-gradient(160deg, rgba(224,52,43,.35), rgba(224,52,43,.05)); animation-delay: -3s; }
+/* in game the table art lives inside #table-scene; the page backdrop is a
+   dark wood-toned gradient that matches the painted room */
+body[data-view="game"] .bg-decor {
+  background:
+    radial-gradient(110% 60% at 50% 0%, rgba(150, 92, 40, .28) 0%, rgba(150, 92, 40, 0) 60%),
+    linear-gradient(180deg, #2b170c 0%, #1c0e07 55%, #100704 100%);
+}
 @keyframes floaty { from { transform: translateY(0) rotate(var(--r, 0deg)); } to { transform: translateY(-14px) rotate(var(--r, 0deg)); } }
 
 /* ---------- sound toggle ---------- */
@@ -143,9 +144,24 @@ h1, h2, h3 { margin: 0 0 8px; }
 .name-avatar, .my-avatar {
   width: 40px; height: 40px; border-radius: 50%; flex: none; display: grid; place-items: center;
   font-weight: 900; color: #fff; border: 2.5px solid #fff;
-  background: linear-gradient(145deg, #5ea9ef, var(--blue) 55%, #14589f);
   box-shadow: 0 3px 7px rgba(0,0,0,.35), inset 0 -5px 8px rgba(0,0,0,.25);
 }
+/* character avatars: one 2x2 sprite sheet, quadrant picked per seat index.
+   Slight oversize (206%) crops the sheet's grid gutters out of the circle. */
+.av0, .av1, .av2, .av3 {
+  background-image: url('art/avatars.webp');
+  background-size: 206% 206%;
+  background-repeat: no-repeat;
+}
+.av0 { background-position: 0% 0%; background-color: #128be8; }
+/* home profile chip only: zoom into the cap character's face (src window
+   ~250px at 95,120 of the sheet) so the face fills the 40px circle instead
+   of the quadrant's blue backdrop dominating. Game avatars keep the
+   full-quadrant framing above. */
+.name-avatar.av0 { background-size: 352% 352%; background-position: 15% 19%; }
+.av1 { background-position: 100% 0%; background-color: #12c24a; }
+.av2 { background-position: 0% 100%; background-color: #8b30f0; }
+.av3 { background-position: 100% 100%; background-color: #ff8c1a; }
 .name-chip input { border: none; box-shadow: none; background: transparent; margin: 0; padding: 8px 2px; flex: 1; font-weight: 600; }
 .name-chip input:focus { outline: none; }
 
@@ -188,12 +204,8 @@ h1, h2, h3 { margin: 0 0 8px; }
 .seat-row .avatar {
   width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
   font-weight: 900; color: #fff; border: 2.5px solid rgba(255,255,255,.65); flex: none;
-  background: linear-gradient(145deg, #5ea9ef, var(--blue) 55%, #14589f);
   box-shadow: 0 3px 7px rgba(0,0,0,.35), inset 0 -5px 8px rgba(0,0,0,.25);
 }
-.seat-row:nth-child(2) .avatar { background: linear-gradient(145deg, #5cc877, var(--green) 55%, #1c7a36); }
-.seat-row:nth-child(3) .avatar { background: linear-gradient(145deg, #c07fe8, #8b46c7 55%, #5f2a8f); }
-.seat-row:nth-child(4) .avatar { background: linear-gradient(145deg, #ffab5e, #e07b24 55%, #a34e0e); }
 .seat-row .grow { flex: 1; min-width: 0; }
 .badge { font-size: .75rem; font-weight: 700; background: rgba(255,255,255,.16); padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
 .badge.ready { background: var(--green); color: #fff; box-shadow: 0 0 10px rgba(46,168,79,.7); }
@@ -229,22 +241,24 @@ h1, h2, h3 { margin: 0 0 8px; }
 }
 #timerfill { height: 100%; width: 100%; background: var(--green); border-radius: 99px; box-shadow: 0 0 9px rgba(255,255,255,.4); transition: width .12s linear; }
 
-#table-scene { position: relative; padding: 98px 0 2px; }
+#table-scene { position: relative; padding: 98px 0 10px; }
+/* painted room backdrop: the interactive layer floats over the painted
+   table — the DOM table itself is transparent so there is only ONE table */
+#table-scene::before {
+  content: ''; position: absolute; inset: 0; z-index: 0; border-radius: 26px;
+  background:
+    radial-gradient(115% 88% at 50% 46%, rgba(0,0,0,0) 52%, rgba(12, 5, 2, .5) 100%),
+    url('art/table-bg.webp') center / cover no-repeat;
+  box-shadow: 0 18px 34px rgba(0,0,0,.5), inset 0 0 0 1px rgba(255,255,255,.09);
+}
 #table {
-  position: relative; border-radius: 50%; padding: 36px 18px 32px;
-  background: radial-gradient(ellipse at 50% 36%, #c22318 0%, #9c1a13 52%, #6d0f0c 100%);
-  border: 7px solid #3a1c07;
-  box-shadow:
-    0 0 0 4px #7a4a1c, 0 0 0 6px rgba(0,0,0,.35),
-    inset 0 0 55px rgba(0,0,0,.5), inset 0 0 0 3px rgba(255,255,255,.09),
-    0 20px 34px rgba(0,0,0,.5);
+  position: relative; z-index: 1; border-radius: 50%;
+  min-height: 300px; padding: 20px 18px;
+  display: flex; align-items: center; justify-content: center;
+  /* whisper of extra red so the piles read as sitting on the painted felt */
+  background: radial-gradient(ellipse at 50% 50%, rgba(178, 26, 18, .22) 0%, rgba(140, 16, 12, .10) 55%, rgba(0,0,0,0) 76%);
 }
-#table::before {
-  content: ''; position: absolute; inset: 0; border-radius: 50%; z-index: 0;
-  background-image: radial-gradient(rgba(255,255,255,.055) 1px, transparent 1.7px);
-  background-size: 9px 9px; pointer-events: none;
-}
-#direction-ring { position: absolute; inset: 5px; width: calc(100% - 10px); height: calc(100% - 10px); z-index: 1; pointer-events: none; }
+#direction-ring { position: absolute; inset: 5px; width: calc(100% - 10px); height: calc(100% - 10px); z-index: 1; pointer-events: none; opacity: .55; }
 #direction-ring ellipse {
   fill: none; stroke: rgba(255,255,255,.5); stroke-width: 1.5;
   stroke-dasharray: 3.2 2.4; animation: dir-march 1.6s linear infinite;
@@ -287,13 +301,16 @@ h1, h2, h3 { margin: 0 0 8px; }
 .opp .avatar {
   width: 43px; height: 43px; margin: 0 auto 3px; border-radius: 50%; display: grid; place-items: center;
   font-weight: 900; font-size: 1.05rem; color: #fff; border: 2.5px solid rgba(255,255,255,.7);
-  background: linear-gradient(145deg, #5ea9ef, var(--blue) 55%, #14589f);
   box-shadow: 0 3px 8px rgba(0,0,0,.4), inset 0 -5px 8px rgba(0,0,0,.25);
 }
-.opp:nth-child(2) .avatar { background: linear-gradient(145deg, #5cc877, var(--green) 55%, #1c7a36); }
-.opp:nth-child(3) .avatar { background: linear-gradient(145deg, #c07fe8, #8b46c7 55%, #5f2a8f); }
-.opp b { display: block; font-size: .8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.opp .muted { font-size: .67rem; line-height: 1.3; display: block; }
+.opp b { display: block; font-size: .8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 3px rgba(0,0,0,.85), 0 0 6px rgba(0,0,0,.45); }
+.opp .muted {
+  font-size: .67rem; line-height: 1.3; display: block;
+  /* readable over the busy table art: full opacity (base .muted is .75)
+     on its own subtle dark pill */
+  opacity: 1; width: fit-content; max-width: 100%; margin: 2px auto 0; padding: 1px 7px;
+  border-radius: 999px; background: rgba(0,0,0,.5); text-shadow: 0 1px 2px rgba(0,0,0,.8);
+}
 .opp .backs { display: flex; justify-content: center; margin-top: 4px; }
 .opp .backs .card { width: 17px; height: 25px; font-size: 5px; border-width: 1.5px; border-radius: 4px; margin-left: -8px; }
 .opp .backs .card:first-child { margin-left: 0; }
@@ -343,7 +360,6 @@ h1, h2, h3 { margin: 0 0 8px; }
 /* my seat + hand fan */
 #my-area { margin-top: 10px; }
 #my-seat { display: flex; align-items: center; justify-content: center; gap: 9px; margin-bottom: 2px; }
-.my-avatar { background: linear-gradient(145deg, #5cc877, var(--green) 55%, #1c7a36); }
 #my-info { text-align: center; font-weight: 700; text-shadow: 0 1px 3px rgba(0,0,0,.5); }
 #my-hand {
   --hw: 56px;
@@ -414,14 +430,11 @@ h1, h2, h3 { margin: 0 0 8px; }
   position: relative; z-index: 2; font-size: .82em; letter-spacing: .5px;
   background: rgba(10,10,14,.88); border: 1.5px solid #fff; padding: 2px 7px; border-radius: 6px;
 }
-.card.back { background: linear-gradient(155deg, #ff7a6e, #c22318 50%, #7c0f0a); cursor: pointer; }
-.card.back span {
-  width: 80%; height: 58%; border: 2.5px solid #fff; border-radius: 50%;
-  transform: rotate(-24deg); display: grid; place-items: center; text-align: center;
-  color: var(--yellow); font-weight: 900; font-size: .66em; line-height: 1.12; letter-spacing: .5px;
-  background: rgba(0,0,0,.2); box-shadow: inset 0 0 0 2px rgba(0,0,0,.16), 0 1px 3px rgba(0,0,0,.3);
-  text-shadow: 0 1px 2px rgba(0,0,0,.5); padding: 2px;
+.card.back {
+  background: #7c0f0a url('art/card-back.webp') center / cover no-repeat;
+  cursor: pointer;
 }
+.card.back span { display: none; }
 
 /* ---------- play / draw / deal animations ---------- */
 .card.played-in { animation: played-in .38s cubic-bezier(.2, .9, .3, 1.15); }
@@ -498,6 +511,7 @@ h1, h2, h3 { margin: 0 0 8px; }
   :root { --card-w: 72px; --card-h: 104px; }
   #view-game { max-width: 680px; }
   #table-scene { padding-top: 106px; }
+  #table { min-height: 330px; }
   .opp { width: 110px; }
   .opp:first-child:nth-last-child(3), .opp:last-child:nth-child(3) { top: 138px; }
   #my-hand { --hw: 64px; justify-content: center; }

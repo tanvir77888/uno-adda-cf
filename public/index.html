@@ -5,14 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>UNO Adda — free card game with friends &amp; bots</title>
 <link rel="stylesheet" href="style.css">
+<link rel="preload" as="image" href="art/lobby-bg.webp">
 </head>
-<body>
+<body data-view="home">
 
-<!-- ambient scene decoration (pure CSS art, no images) -->
-<div class="bg-decor" aria-hidden="true">
-  <span class="bg-card c1"></span><span class="bg-card c2"></span><span class="bg-card c3"></span>
-  <span class="bg-card c4"></span><span class="bg-card c5"></span><span class="bg-card c6"></span>
-</div>
+<!-- ambient scene: illustrated art layer (lobby art on home/lobby,
+     plain dark backdrop in game — the table art lives in the scene) -->
+<div class="bg-decor" aria-hidden="true"></div>
 
 <button id="btn-sound" class="btn-sound" title="Sound on/off" aria-label="Toggle sound">🔊</button>
 
@@ -27,7 +26,7 @@
   </div>
 
   <label class="field name-field"><span class="field-label">Your name</span>
-    <span class="name-chip"><span id="name-avatar" class="name-avatar">?</span>
+    <span class="name-chip"><span id="name-avatar" class="name-avatar av av0"></span>
       <input id="in-name" type="text" maxlength="20" placeholder="e.g. Tanvir" autocomplete="off">
     </span>
   </label>
@@ -129,7 +128,7 @@
   </div>
 
   <div id="my-area">
-    <div id="my-seat"><span id="my-avatar" class="my-avatar">?</span><div id="my-info"></div></div>
+    <div id="my-seat"><span id="my-avatar" class="my-avatar av av0"></span><div id="my-info"></div></div>
     <div id="my-hand"></div>
   </div>
 

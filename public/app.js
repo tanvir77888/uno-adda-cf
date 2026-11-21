@@ -106,6 +106,7 @@ function onSnapshot(msg) {
 
 function showView(name) {
   for (const v of ['home', 'lobby', 'game']) $('view-' + v).classList.toggle('hidden', v !== name);
+  document.body.dataset.view = name; // presentation: per-view backdrop art
 }
 
 function showError(message) {
@@ -125,9 +126,9 @@ function renderLobby(msg) {
     ' · All Wild ' + (r.allWild ? 'on' : 'off') +
     ' · 30s turns · first to 500';
   const me = msg.seats.find(s => s.isYou);
-  $('lobby-seats').innerHTML = msg.seats.map(s => `
+  $('lobby-seats').innerHTML = msg.seats.map((s, i) => `
     <div class="seat-row" data-voice-mark="${s.id}">
-      <div class="avatar">${esc(initials(s.name))}</div>
+      <div class="avatar av${i % 4}"></div>
       <div class="grow"><b>${esc(s.name)}</b>${s.isYou ? ' (you)' : ''}${s.isBot ? ' 🤖' : ''}<br>
       <span class="muted">Score: ${s.score}</span></div>
       ${s.id === msg.room.hostSeatId ? '<span class="badge host">HOST</span>' : ''}
@@ -164,7 +165,7 @@ function renderGame(msg) {
   // opponents
   $('opponents').innerHTML = msg.seats.filter(s => !s.isYou).map(s => `
     <div class="opp ${s.isCurrent ? 'current' : ''} ${s.connected ? '' : 'disc'}" data-voice-mark="${s.id}">
-      <div class="avatar">${esc(initials(s.name))}</div>
+      <div class="avatar av${msg.seats.indexOf(s) % 4}"></div>
       <div><b>${esc(s.name)}</b>${s.isBot ? ' 🤖' : ''}</div>
       <div class="muted">${s.cardCount} cards · ${s.score} pts${s.team ? ' · Team ' + s.team.toUpperCase() : ''}</div>
       <div class="backs">${backsHtml(Math.min(s.cardCount, 7))}</div>
@@ -583,10 +584,8 @@ function applyFxInner(msg) {
   const pg = fxPrev && fxPrev.game;
   const me = msg.seats.find(s => s.isYou);
 
-  // profile chips
-  const nav = $('name-avatar');
-  if (nav) nav.textContent = initials(myName());
-  if (me) { const ma = $('my-avatar'); if (ma) ma.textContent = initials(me.name); }
+  // profile chip: my game avatar shows my seat's character (home chip is a static av0)
+  if (me) { const ma = $('my-avatar'); if (ma) ma.className = 'my-avatar av' + (msg.seats.indexOf(me) % 4); }
 
   // banner visibility + my-turn scene state
   const tb = $('turn-banner');
@@ -802,11 +801,6 @@ paintSoundBtn();
 document.addEventListener('pointerdown', (e) => {
   if (e.target.closest && e.target.closest('.btn, .color-btn')) sfx('click');
 }, { passive: true });
-$('in-name').addEventListener('input', () => {
-  const nav = $('name-avatar');
-  if (nav) nav.textContent = initials(myName());
-});
-
 // boot: try to restore an in-progress room. The saved code must be known
 // BEFORE the socket opens, so the Worker routes us to the right object.
 try {
