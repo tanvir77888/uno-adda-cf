@@ -1,0 +1,20 @@
+name = "uno-adda"
+main = "src/worker.js"
+compatibility_date = "2025-09-01"
+
+# Static client (public/index.html, style.css, app.js). Paths that match a
+# file are served straight from assets; everything else reaches the Worker,
+# which handles /health and the /ws* WebSocket routes itself.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+# One GameRoom Durable Object per room code.
+[[durable_objects.bindings]]
+name = "GAME_ROOM"
+class_name = "GameRoom"
+
+# SQLite-backed Durable Objects — the class type available on the free plan.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["GameRoom"]
