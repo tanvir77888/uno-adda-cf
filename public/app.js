@@ -98,6 +98,7 @@ function onSnapshot(msg) {
   handleEvents(msg);
   renderChat('lobby', msg.chat);
   renderChat('game', msg.chat);
+  applyFx(msg);
   if (msg.game && msg.game.youMustPickColor && msg.game.phase === 'firstColor') openColorPicker('first');
   if (status !== 'roundEnd') $('end-modal').classList.add('hidden');
   if (status === 'roundEnd') renderEnd(msg);
@@ -230,7 +231,7 @@ function cardHtml(card, playable, isDrew) {
   const inner = card.color === 'wild'
     ? `<span class="quad"><i></i><i></i><i></i><i></i></span><span class="wild-label">${label}</span>`
     : `<span class="corner tl">${label}</span><span class="oval"><span class="big">${label}</span></span><span class="corner br">${label}</span>`;
-  return `<div class="${cls.join(' ')}" data-id="${card.id}">${inner}</div>`;
+  return `<div class="${cls.join(' ')}" data-id="${card.id}" data-kind="${card.kind}">${inner}</div>`;
 }
 function cardLabel(card) {
   switch (card.kind) {
@@ -290,6 +291,7 @@ function renderEnd(msg) {
   const isHost = msg.you.seatId === msg.room.hostSeatId;
   $('btn-again').classList.toggle('hidden', !isHost);
   $('end-wait').classList.toggle('hidden', isHost);
+  fxRoundEnd(msg, winner, mw);
   $('end-modal').classList.remove('hidden');
 }
 $('btn-again').onclick = () => { $('end-modal').classList.add('hidden'); send({ type: 'start_game' }); };
@@ -326,18 +328,18 @@ function handleEvents(msg) {
   const name = (id) => { const s = msg.seats.find(x => x.id === id); return s ? s.name : 'Someone'; };
   for (const e of events) {
     switch (e.type) {
-      case 'played': break; // too noisy
-      case 'skipped': toast(`${name(e.seatId)} is skipped!`); break;
-      case 'reversed': toast('Direction reversed ⇋'); break;
-      case 'pending': toast(`${e.kind === 'draw2' ? '+2' : '+4'} — ${name(e.seatId)} owes ${e.total} cards!`); break;
-      case 'took_pending': toast(`${name(e.seatId)} took ${e.count} cards`); break;
-      case 'challenge_won': toast(`Bluff caught! ${name(e.accused)} draws 4`); break;
-      case 'challenge_lost': toast(`Challenge failed — ${name(e.seatId)} draws ${e.count}`); break;
-      case 'uno_called': toast(`${name(e.seatId)}: UNO!`); break;
-      case 'uno_suspect': toast(`${name(e.seatId)} has ONE card — catch them before their turn is safe!`); break;
-      case 'uno_caught': toast(`Caught! ${name(e.seatId)} forgot UNO and draws 2`); break;
-      case 'timeout': toast(`${name(e.seatId)} ran out of time`); break;
-      case 'color_chosen': toast(`Color is now ${COLOR_NAMES[e.color]}`); break;
+      case 'played': break; // too noisy — the card animation + swish cover it
+      case 'skipped': toast(`${name(e.seatId)} is skipped!`); sfx('skip'); break;
+      case 'reversed': toast('Direction reversed ⇋'); sfx('reverse'); break;
+      case 'pending': toast(`${e.kind === 'draw2' ? '+2' : '+4'} — ${name(e.seatId)} owes ${e.total} cards!`); sfx('sting'); break;
+      case 'took_pending': toast(`${name(e.seatId)} took ${e.count} cards`); sfx('draw'); break;
+      case 'challenge_won': toast(`Bluff caught! ${name(e.accused)} draws 4`); sfx('sting'); break;
+      case 'challenge_lost': toast(`Challenge failed — ${name(e.seatId)} draws ${e.count}`); sfx('sting'); break;
+      case 'uno_called': toast(`${name(e.seatId)}: UNO!`); showUnoPop(name(e.seatId)); sfx('uno'); break;
+      case 'uno_suspect': toast(`${name(e.seatId)} has ONE card — catch them before their turn is safe!`); sfx('alert'); break;
+      case 'uno_caught': toast(`Caught! ${name(e.seatId)} forgot UNO and draws 2`); sfx('sting'); break;
+      case 'timeout': toast(`${name(e.seatId)} ran out of time`); sfx('skip'); break;
+      case 'color_chosen': toast(`Color is now ${COLOR_NAMES[e.color]}`); sfx('click'); break;
       case 'round_end': break; // modal covers it
     }
   }
@@ -561,6 +563,249 @@ function renderVoice(msg) {
 document.querySelectorAll('.voice-join').forEach(b => { b.onclick = joinVoice; });
 document.querySelectorAll('.voice-mute').forEach(b => { b.onclick = toggleMute; });
 document.querySelectorAll('.voice-leave').forEach(b => { b.onclick = () => leaveVoice(true); });
+
+// ------------------------------------------------------------ presentation FX
+// Pure presentation: sounds, animations, confetti. Reads snapshots and
+// diffs them; never sends protocol messages and never touches game state.
+let fxPrev = null;
+let fxDealKey = '';
+let fxEndKey = '';
+let fxPopTimer = null;
+let fxConfettiTimer = null;
+
+function applyFx(msg) {
+  try { applyFxInner(msg); } catch { /* presentation must never break the game */ }
+  fxPrev = msg;
+}
+
+function applyFxInner(msg) {
+  const g = msg.game;
+  const pg = fxPrev && fxPrev.game;
+  const me = msg.seats.find(s => s.isYou);
+
+  // profile chips
+  const nav = $('name-avatar');
+  if (nav) nav.textContent = initials(myName());
+  if (me) { const ma = $('my-avatar'); if (ma) ma.textContent = initials(me.name); }
+
+  // banner visibility + my-turn scene state
+  const tb = $('turn-banner');
+  tb.classList.toggle('show', !!tb.textContent.trim());
+  tb.classList.toggle('mine', !!(g && g.isYourTurn));
+  $('view-game').classList.toggle('my-turn', !!(g && g.isYourTurn));
+
+  if (!g) return;
+
+  // direction-of-play ring
+  const ring = $('direction-ring');
+  if (ring) ring.classList.toggle('rev', g.direction < 0);
+
+  // hand fan density
+  const handEl = $('my-hand');
+  const count = g.yourHand.length;
+  handEl.classList.toggle('tight', count > 9 && count <= 13);
+  handEl.classList.toggle('tight2', count > 13);
+
+  // fresh round dealt (we were not playing in the previous snapshot)
+  const dealKey = msg.room.code + '|' + msg.room.roundNo;
+  if (fxPrev && fxPrev.room.status !== 'playing' && msg.room.status === 'playing' && fxDealKey !== dealKey) {
+    fxDealKey = dealKey;
+    handEl.querySelectorAll('.card').forEach((el, i) => {
+      el.classList.add('deal-in');
+      el.style.animationDelay = (i * 70) + 'ms';
+    });
+    sfx('deal');
+    return; // the deal snapshot is not a play/draw diff
+  }
+
+  if (!pg) return;
+
+  // a card landed on the discard pile
+  if (g.topCard.id !== pg.topCard.id) {
+    const top = document.querySelector('#discard-pile .card');
+    if (top) top.classList.add('played-in');
+    sfx('play');
+    const actor = msg.seats.find(s => {
+      const p = fxPrev.seats.find(x => x.id === s.id);
+      return p && s.cardCount < p.cardCount;
+    });
+    if (actor && !actor.isYou) markOpp(actor.id, 'acted');
+  }
+
+  // I drew cards (hand grew without the top card changing)
+  const prevIds = new Set(pg.yourHand.map(c => c.id));
+  const fresh = g.yourHand.filter(c => !prevIds.has(c.id));
+  if (fresh.length && g.topCard.id === pg.topCard.id) {
+    for (const c of fresh) {
+      const el = handEl.querySelector('[data-id="' + c.id + '"]');
+      if (el) el.classList.add('drew-in');
+    }
+    sfx('draw');
+    handEl.scrollTo({ left: handEl.scrollWidth, behavior: 'smooth' });
+  }
+
+  // opponents drew cards
+  for (const s of msg.seats) {
+    if (s.isYou) continue;
+    const p = fxPrev.seats.find(x => x.id === s.id);
+    if (p && s.cardCount > p.cardCount) markOpp(s.id, 'drew-fx');
+  }
+
+  // the turn came around to me
+  if (g.isYourTurn && !pg.isYourTurn) sfx('ding');
+
+  // current color changed — pulse the gem
+  if (g.currentColor !== pg.currentColor) {
+    const ci = $('color-indicator');
+    ci.classList.remove('gem-pulse');
+    void ci.offsetWidth;
+    ci.classList.add('gem-pulse');
+  }
+}
+
+function markOpp(seatId, cls) {
+  document.querySelectorAll('#opponents .opp').forEach(el => {
+    if (el.dataset.voiceMark === seatId) {
+      el.classList.remove(cls);
+      void el.offsetWidth;
+      el.classList.add(cls);
+    }
+  });
+}
+
+function showUnoPop(name) {
+  const pop = $('uno-pop');
+  pop.querySelector('.uno-pop-name').textContent = name ? name + ' called' : '';
+  pop.classList.remove('hidden', 'show');
+  void pop.offsetWidth;
+  pop.classList.add('show');
+  if (fxPopTimer) clearTimeout(fxPopTimer);
+  fxPopTimer = setTimeout(() => { pop.classList.add('hidden'); pop.classList.remove('show'); }, 1550);
+}
+
+function fxRoundEnd(msg, winner) {
+  const key = msg.room.code + '|' + msg.room.roundNo + '|' + (winner ? winner.id : '');
+  if (fxEndKey === key) return;
+  fxEndKey = key;
+  const me = msg.seats.find(s => s.isYou);
+  const iWon = !!(winner && me && winner.id === me.id);
+  const teamWon = !!(winner && me && me.team && winner.team === me.team);
+  if (iWon) { confettiBurst(90); sfx('win'); }
+  else if (teamWon) { confettiBurst(45); sfx('win'); }
+}
+
+function confettiBurst(n) {
+  const box = $('confetti');
+  const colors = ['#e0342b', '#f6c90e', '#2ea84f', '#2277d4', '#ffffff'];
+  for (let i = 0; i < n; i++) {
+    const p = document.createElement('span');
+    p.className = 'confetti-piece';
+    const w = 6 + Math.random() * 5;
+    p.style.left = (Math.random() * 100) + '%';
+    p.style.width = w + 'px';
+    p.style.height = (w * 1.55) + 'px';
+    p.style.background = colors[(Math.random() * colors.length) | 0];
+    p.style.animationDuration = (2.2 + Math.random() * 1.5) + 's';
+    p.style.animationDelay = (Math.random() * 0.35) + 's';
+    p.style.setProperty('--dx', ((Math.random() * 180) - 90) + 'px');
+    p.style.setProperty('--rot', (360 + Math.random() * 720) + 'deg');
+    box.appendChild(p);
+  }
+  if (fxConfettiTimer) clearTimeout(fxConfettiTimer);
+  fxConfettiTimer = setTimeout(() => { box.innerHTML = ''; }, 4600);
+}
+
+// ------------------------------------------------------------ sound (WebAudio synth, no files)
+const sfxState = { ctx: null, muted: localStorage.getItem('uno-adda-muted') === '1' };
+function sfxEnsure() {
+  if (sfxState.ctx) { if (sfxState.ctx.state === 'suspended') sfxState.ctx.resume(); return sfxState.ctx; }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  try { sfxState.ctx = new AC(); } catch { return null; }
+  return sfxState.ctx;
+}
+document.addEventListener('pointerdown', () => { if (!sfxState.muted) sfxEnsure(); }, { passive: true });
+
+function tone(freqA, freqB, dur, opts) {
+  const o = opts || {};
+  const ctx = sfxEnsure(); if (!ctx || sfxState.muted) return;
+  const t0 = ctx.currentTime + (o.delay || 0);
+  const osc = ctx.createOscillator();
+  const gn = ctx.createGain();
+  osc.type = o.type || 'sine';
+  osc.frequency.setValueAtTime(freqA, t0);
+  if (freqB && freqB !== freqA) osc.frequency.exponentialRampToValueAtTime(Math.max(30, freqB), t0 + dur);
+  gn.gain.setValueAtTime(0, t0);
+  gn.gain.linearRampToValueAtTime(o.gain || .1, t0 + .012);
+  gn.gain.exponentialRampToValueAtTime(.0008, t0 + dur);
+  osc.connect(gn); gn.connect(ctx.destination);
+  osc.start(t0); osc.stop(t0 + dur + .05);
+}
+function noiseBurst(dur, opts) {
+  const o = opts || {};
+  const ctx = sfxEnsure(); if (!ctx || sfxState.muted) return;
+  const t0 = ctx.currentTime + (o.delay || 0);
+  const len = Math.max(1, (dur * ctx.sampleRate) | 0);
+  const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+  const src = ctx.createBufferSource(); src.buffer = buf;
+  const f = ctx.createBiquadFilter(); f.type = 'bandpass'; f.Q.value = 1.1;
+  f.frequency.setValueAtTime(o.freqA || 900, t0);
+  f.frequency.exponentialRampToValueAtTime(o.freqB || 2400, t0 + dur);
+  const gn = ctx.createGain();
+  gn.gain.setValueAtTime(o.gain || .07, t0);
+  gn.gain.exponentialRampToValueAtTime(.0008, t0 + dur);
+  src.connect(f); f.connect(gn); gn.connect(ctx.destination);
+  src.start(t0);
+}
+function sfx(kind) {
+  if (sfxState.muted) return;
+  switch (kind) {
+    case 'click': tone(620, 340, .06, { type: 'triangle', gain: .055 }); break;
+    case 'play':
+      noiseBurst(.16, { freqA: 700, freqB: 2800, gain: .09 });
+      tone(190, 120, .07, { type: 'triangle', gain: .05, delay: .1 });
+      break;
+    case 'draw':
+      noiseBurst(.09, { freqA: 500, freqB: 1200, gain: .06 });
+      noiseBurst(.09, { freqA: 500, freqB: 1200, gain: .06, delay: .11 });
+      break;
+    case 'deal':
+      for (let i = 0; i < 5; i++) noiseBurst(.06, { freqA: 600, freqB: 1500, gain: .045, delay: i * .07 });
+      break;
+    case 'ding': tone(880, 880, .14, { gain: .07 }); tone(1318, 1318, .2, { gain: .06, delay: .09 }); break;
+    case 'alert':
+      tone(1174, 1174, .08, { type: 'square', gain: .032 });
+      tone(1174, 1174, .08, { type: 'square', gain: .032, delay: .13 });
+      break;
+    case 'sting': tone(220, 82, .3, { type: 'sawtooth', gain: .07 }); break;
+    case 'skip': tone(520, 240, .13, { type: 'triangle', gain: .07 }); break;
+    case 'reverse': tone(300, 660, .15, { type: 'triangle', gain: .07 }); break;
+    case 'uno': [523, 659, 784, 1046].forEach((f, i) => tone(f, f, .12, { type: 'triangle', gain: .08, delay: i * .07 })); break;
+    case 'win': [523, 659, 784, 1046, 784, 1046, 1318].forEach((f, i) => tone(f, f, .16, { type: 'triangle', gain: .085, delay: i * .1 })); break;
+  }
+}
+
+const soundBtn = $('btn-sound');
+function paintSoundBtn() {
+  soundBtn.textContent = sfxState.muted ? '🔇' : '🔊';
+  soundBtn.classList.toggle('off', sfxState.muted);
+}
+soundBtn.onclick = () => {
+  sfxState.muted = !sfxState.muted;
+  localStorage.setItem('uno-adda-muted', sfxState.muted ? '1' : '0');
+  paintSoundBtn();
+  if (!sfxState.muted) sfx('click');
+};
+paintSoundBtn();
+document.addEventListener('pointerdown', (e) => {
+  if (e.target.closest && e.target.closest('.btn, .color-btn')) sfx('click');
+}, { passive: true });
+$('in-name').addEventListener('input', () => {
+  const nav = $('name-avatar');
+  if (nav) nav.textContent = initials(myName());
+});
 
 // boot: try to restore an in-progress room. The saved code must be known
 // BEFORE the socket opens, so the Worker routes us to the right object.

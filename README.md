@@ -34,10 +34,15 @@ Browser ──WSS───▶ Worker ──▶ GameRoom Durable Object (one per 
   `setInterval` UNO-catch sweep are replaced by a single Durable Object
   alarm, always set to the earliest pending deadline (bot move ~1s, catch
   sweep 1.5s, turn timeout 30s). Alarms are durable and wake the object.
-- **Client** (`public/`) — identical except the socket URL: it connects to
-  `/ws` to create and `/ws/<CODE>` to join/restore, so the Worker can route
-  to the right object. The message protocol did not change at all, and the
-  WebRTC voice code carried over untouched.
+- **Client** (`public/`) — same wire protocol and message flow as the Node
+  version; the socket connects to `/ws` to create and `/ws/<CODE>` to
+  join/restore, so the Worker can route to the right object. The WebRTC
+  voice code is unchanged. On top of that sits a presentation layer
+  (2026-11-21 visual overhaul): glossy CSS card art, an oval table with
+  players seated around it, snapshot-diff animations (deal / play / draw,
+  UNO pop, win confetti) and WebAudio-synthesized sound effects with a
+  mute toggle — all in `public/`, no server or protocol changes.
+  Screenshots: `design-preview/`.
 
 ## Run locally
 

@@ -8,36 +8,46 @@
 </head>
 <body>
 
+<!-- ambient scene decoration (pure CSS art, no images) -->
+<div class="bg-decor" aria-hidden="true">
+  <span class="bg-card c1"></span><span class="bg-card c2"></span><span class="bg-card c3"></span>
+  <span class="bg-card c4"></span><span class="bg-card c5"></span><span class="bg-card c6"></span>
+</div>
+
+<button id="btn-sound" class="btn-sound" title="Sound on/off" aria-label="Toggle sound">🔊</button>
+
 <!-- ======================= HOME ======================= -->
 <section id="view-home" class="view">
   <div class="brand">
     <div class="brand-cards" aria-hidden="true">
       <span class="mini-card red">7</span><span class="mini-card blue">2</span><span class="mini-card green">5</span><span class="mini-card yellow">9</span>
     </div>
-    <h1>UNO <span>Adda</span></h1>
+    <h1 class="logo"><span class="logo-uno">UNO</span> <span class="logo-adda">Adda</span></h1>
     <p class="tagline">The classic card game — free, with friends or bots. No coins, no ads.</p>
   </div>
 
-  <label class="field">Your name
-    <input id="in-name" type="text" maxlength="20" placeholder="e.g. Tanvir" autocomplete="off">
+  <label class="field name-field"><span class="field-label">Your name</span>
+    <span class="name-chip"><span id="name-avatar" class="name-avatar">?</span>
+      <input id="in-name" type="text" maxlength="20" placeholder="e.g. Tanvir" autocomplete="off">
+    </span>
   </label>
 
-  <div class="panel">
-    <h2>Quick game vs bots</h2>
+  <div class="panel panel-bots">
+    <h2><span class="h2-dot"></span>Quick game vs bots</h2>
     <label class="field inline">Bots
       <select id="in-bots"><option value="1">1</option><option value="2" selected>2</option><option value="3">3</option></select>
     </label>
     <div class="toggles" id="bot-toggles"></div>
-    <button id="btn-bots" class="btn primary big">Play vs Bots</button>
+    <button id="btn-bots" class="btn primary big">▶ Play vs Bots</button>
   </div>
 
-  <div class="panel">
-    <h2>Play with friends</h2>
+  <div class="panel panel-friends">
+    <h2><span class="h2-dot"></span>Play with friends</h2>
     <label class="field inline">Mode
       <select id="in-mode"><option value="classic">Classic</option><option value="2v2">2v2 Teams (4 players)</option></select>
     </label>
     <div class="toggles" id="room-toggles"></div>
-    <button id="btn-create" class="btn primary big">Create a Room</button>
+    <button id="btn-create" class="btn primary big">＋ Create a Room</button>
     <div class="join-row">
       <input id="in-code" type="text" maxlength="6" placeholder="ROOM CODE" autocomplete="off">
       <button id="btn-join" class="btn">Join</button>
@@ -92,28 +102,34 @@
 <!-- ======================= GAME ======================= -->
 <section id="view-game" class="view hidden">
   <div id="timerbar"><div id="timerfill"></div></div>
-  <div id="opponents"></div>
 
-  <div id="table">
-    <div id="pile-area">
-      <div class="pile-wrap">
-        <div id="draw-pile" class="card back" title="Draw a card"><span>UNO<br>Adda</span></div>
-        <div id="draw-count" class="pile-count"></div>
+  <div id="table-scene">
+    <div id="table">
+      <svg id="direction-ring" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+        <ellipse cx="50" cy="50" rx="47" ry="44" pathLength="100"/>
+      </svg>
+      <div id="pile-area">
+        <div class="pile-wrap">
+          <div id="draw-pile" class="card back" title="Draw a card"><span>UNO<br>Adda</span></div>
+          <div id="draw-count" class="pile-count"></div>
+        </div>
+        <div id="discard-pile"></div>
+        <div id="color-indicator"></div>
       </div>
-      <div id="discard-pile"></div>
-      <div id="color-indicator"></div>
     </div>
-    <div id="turn-banner"></div>
-    <div id="pending-banner"></div>
-    <div id="action-row">
-      <button id="btn-uno" class="btn uno">UNO!</button>
-      <button id="btn-pass" class="btn hidden">Pass</button>
-      <button id="btn-challenge" class="btn warn hidden">Challenge +4!</button>
-    </div>
+    <div id="opponents"></div>
+  </div>
+
+  <div id="turn-banner"></div>
+  <div id="pending-banner"></div>
+  <div id="action-row">
+    <button id="btn-uno" class="btn uno">UNO!</button>
+    <button id="btn-pass" class="btn hidden">Pass</button>
+    <button id="btn-challenge" class="btn warn hidden">Challenge +4!</button>
   </div>
 
   <div id="my-area">
-    <div id="my-info"></div>
+    <div id="my-seat"><span id="my-avatar" class="my-avatar">?</span><div id="my-info"></div></div>
     <div id="my-hand"></div>
   </div>
 
@@ -160,6 +176,8 @@
   </div>
 </div>
 
+<div id="uno-pop" class="hidden" aria-hidden="true"><span class="uno-pop-word">UNO!</span><span class="uno-pop-name"></span></div>
+<div id="confetti" aria-hidden="true"></div>
 <div id="toasts"></div>
 <div id="voice-audios" class="hidden"></div>
 
