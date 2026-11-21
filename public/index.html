@@ -14,6 +14,7 @@
 <div class="bg-decor" aria-hidden="true"></div>
 
 <button id="btn-sound" class="btn-sound" title="Sound on/off" aria-label="Toggle sound">🔊</button>
+<button id="btn-music" class="btn-sound btn-music" title="Music on/off" aria-label="Toggle music">🎵</button>
 
 <!-- ======================= AUTH ======================= -->
 <section id="view-auth" class="view hidden">
@@ -26,6 +27,12 @@
   </div>
 
   <div class="panel auth-card">
+    <div id="auth-maintenance" class="hidden">
+      <p class="maint-icon">🛠️</p>
+      <p class="maint-msg">সার্ভার রক্ষণাবেক্ষণ চলছে, কিছুক্ষণ পরে আবার চেষ্টা করুন</p>
+      <p class="muted">The server is under maintenance — please try again in a little while.</p>
+      <button id="btn-admin-escape" class="btn">তবু লগইন করুন (অ্যাডমিন)</button>
+    </div>
     <div class="auth-tabs">
       <button id="tab-login" class="auth-tab active">Log in</button>
       <button id="tab-signup" class="auth-tab">Create account</button>
@@ -72,6 +79,12 @@
     <p class="tagline">The classic card game — free, with friends or bots.</p>
   </div>
 
+  <div id="announce-banner" class="announce-banner hidden"></div>
+  <div id="notif-banner" class="notif-banner hidden" role="button" title="Open notifications">
+    <span class="notif-banner-ic">📢</span>
+    <span class="notif-banner-text"><b id="notif-banner-title"></b><span id="notif-banner-body"></span></span>
+  </div>
+
   <button id="profile-chip" class="name-chip" title="Open your profile">
     <span id="name-avatar" class="name-avatar av av0"></span>
     <span class="chip-text"><b id="profile-chip-name">Player</b><span id="profile-chip-id" class="muted">ID: —</span></span>
@@ -82,65 +95,123 @@
     <span class="coin-chip" title="Your coins — free play money, just for fun"><img class="coin-ic" src="art/coin.webp" alt=""><span class="coin-balance">500</span></span>
     <button id="btn-gift" class="btn gift">🎁 Daily Gift +200</button>
     <button id="btn-board" class="btn">🏆 Leaderboard</button>
+    <button id="btn-bell" class="btn bell-btn" title="Notifications">🔔<span id="bell-badge" class="bell-badge hidden">0</span></button>
+    <span class="more-wrap">
+      <button id="btn-more" class="btn more-btn" title="More" aria-haspopup="true">⋯</button>
+      <span id="more-menu" class="more-menu hidden">
+        <button id="btn-menu-about" class="more-item">ℹ️ আমাদের সম্পর্কে · About Us</button>
+        <button id="btn-menu-gift" class="more-item">🎁 Daily Gift</button>
+        <button id="btn-menu-rules" class="more-item">📖 How to Play</button>
+      </span>
+    </span>
   </div>
 
   <div class="tiles">
-    <button class="tile tile-quick active" data-tile="quick"><span class="tile-emoji">⚡</span><span class="tile-name">Quick Match</span><span class="tile-sub">One round · win the pot</span></button>
-    <button class="tile tile-classic" data-tile="classic"><span class="tile-emoji">🎮</span><span class="tile-name">Classic</span><span class="tile-sub">Vs bots · first to 500</span></button>
-    <button class="tile tile-wild" data-tile="wild"><span class="tile-emoji">🌈</span><span class="tile-name">Go Wild</span><span class="tile-sub">Every card is wild!</span></button>
+    <button class="tile tile-bots" data-tile="bots"><span class="tile-emoji">🤖</span><span class="tile-name">Play vs Bots</span><span class="tile-sub">You vs bots · first to 500</span></button>
+    <button class="tile tile-quick active" data-tile="quick"><span class="tile-emoji">⚡</span><span class="tile-name">Quick Match</span><span class="tile-sub">Live player · one round · win the pot</span></button>
+    <button class="tile tile-wild" data-tile="wild"><span class="tile-emoji">🌈</span><span class="tile-name">Go Wild</span><span class="tile-sub">Live player · every card is wild!</span></button>
     <button class="tile tile-friends" data-tile="friends"><span class="tile-emoji">👥</span><span class="tile-name">Friends</span><span class="tile-sub">Rooms · voice chat</span></button>
   </div>
 
-  <div class="panel tile-panel" id="panel-quick">
-    <h2><span class="h2-dot"></span>⚡ Quick Match — pick your stake</h2>
-    <p class="muted">One round against 3 bots. Win the round and you take the whole pot — your stake × 4. Coins are free play money: no real money, no ads, ever.</p>
-    <div id="tier-list"></div>
-    <p id="quick-note" class="muted"></p>
+  <p id="home-error" class="error"></p>
+</section>
+
+<!-- ======================= MODE: QUICK MATCH ======================= -->
+<section id="view-quick" class="view mode-view mode-quick hidden">
+  <button class="mode-back" data-back>‹ Lobby</button>
+  <div class="mode-hero">
+    <div class="mode-hero-emoji">⚡</div>
+    <h2 class="mode-title">Quick Match</h2>
+    <p class="mode-live">🟢 Live players only</p>
+    <p class="mode-sub">One round against a real player. Winner takes the pot — both stakes. Your stake is taken only when the match actually starts, never while searching. Coins are free play money: no real money, no ads, ever.</p>
+  </div>
+  <h3 class="mode-h">Pick your stake</h3>
+  <div id="tier-list" class="tier-list"></div>
+  <p id="quick-note" class="muted mode-note"></p>
+  <div class="mode-action">
+    <button id="btn-quick-find" class="btn primary big mode-cta">🔎 Find Match</button>
+  </div>
+</section>
+
+<!-- ======================= MODE: BOTS ======================= -->
+<section id="view-bots" class="view mode-view mode-bots hidden">
+  <button class="mode-back" data-back>‹ Lobby</button>
+  <div class="mode-hero">
+    <div class="mode-hero-emoji">🤖</div>
+    <h2 class="mode-title">Play vs Bots</h2>
+    <p class="mode-sub">Practice against instant bots — first to 500. Bots live only in this slot; every other mode is live humans.</p>
+  </div>
+  <h3 class="mode-h">How many bots?</h3>
+  <div class="seg-row" id="bots-pick-row">
+    <button class="seg-card" data-bots="1"><span class="seg-avs"><span class="avatar av1"></span></span><b>1 Bot</b><span class="seg-sub">Duel</span></button>
+    <button class="seg-card selected" data-bots="2"><span class="seg-avs"><span class="avatar av1"></span><span class="avatar av2"></span></span><b>2 Bots</b><span class="seg-sub">Classic trio</span></button>
+    <button class="seg-card" data-bots="3"><span class="seg-avs"><span class="avatar av1"></span><span class="avatar av2"></span><span class="avatar av3"></span></span><b>3 Bots</b><span class="seg-sub">Full table</span></button>
+  </div>
+  <h3 class="mode-h">House rules</h3>
+  <div class="toggles switch-toggles" id="bot-toggles"></div>
+  <div class="mode-action">
+    <button id="btn-bots" class="btn primary big mode-cta">▶ Play vs Bots</button>
+  </div>
+</section>
+
+<!-- ======================= MODE: GO WILD ======================= -->
+<section id="view-wild" class="view mode-view mode-wild hidden">
+  <button class="mode-back" data-back>‹ Lobby</button>
+  <div class="mode-hero">
+    <div class="mode-hero-emoji">🌈</div>
+    <h2 class="mode-title">Go Wild</h2>
+    <p class="mode-live">🟢 Live players only</p>
+    <p class="mode-sub">All Wild against another LIVE player: every single card plays on everything — pure chaos! Action effects (+2, +4, Skip…) still bite. No coins at stake — just glory. First to 500.</p>
+  </div>
+  <div class="mode-card wild-card">
+    <p>🎴 Every card is wild — play anything, any time</p>
+    <p>🔥 +2 / +4 / Skip / Reverse effects still apply</p>
+    <p>🏆 Round-by-round, first to 500 — stay for a rematch</p>
+  </div>
+  <div class="mode-action">
+    <button id="btn-wild-find" class="btn primary big mode-cta">🔎 Find Match — Live</button>
+  </div>
+</section>
+
+<!-- ======================= MODE: FRIENDS ======================= -->
+<section id="view-friends" class="view mode-view mode-friends hidden">
+  <button class="mode-back" data-back>‹ Lobby</button>
+  <div class="mode-hero">
+    <div class="mode-hero-emoji">👥</div>
+    <h2 class="mode-title">Friends</h2>
+    <p class="mode-sub">Private rooms with voice chat 🎙️ — create a room and share the code, or join with a friend's code.</p>
   </div>
 
-  <div class="panel panel-bots tile-panel hidden" id="panel-classic">
-    <h2><span class="h2-dot"></span>Classic game vs bots</h2>
-    <label class="field inline">Bots
-      <select id="in-bots"><option value="1">1</option><option value="2" selected>2</option><option value="3">3</option></select>
-    </label>
-    <div class="toggles" id="bot-toggles"></div>
-    <button id="btn-bots" class="btn primary big">▶ Play vs Bots</button>
+  <div class="mode-card">
+    <h3 class="mode-card-h">＋ Create a Room</h3>
+    <div class="seg-row" id="mode-pick-row">
+      <button class="seg-card small selected" data-mode="classic"><b>Classic</b><span class="seg-sub">Everyone for themselves</span></button>
+      <button class="seg-card small" data-mode="2v2"><b>Team Mode</b><span class="seg-sub">Even tables · partners across</span></button>
+    </div>
+    <h4 class="mode-h">Seats</h4>
+    <div class="seg-row wrap" id="seats-pick-row">
+      <button class="seg-chip" data-seats="2">2</button>
+      <button class="seg-chip" data-seats="3">3</button>
+      <button class="seg-chip selected" data-seats="4">4</button>
+      <button class="seg-chip" data-seats="5">5</button>
+      <button class="seg-chip" data-seats="6">6</button>
+      <button class="seg-chip" data-seats="7">7</button>
+      <button class="seg-chip" data-seats="8">8</button>
+      <button class="seg-chip" data-seats="9">9</button>
+      <button class="seg-chip" data-seats="10">10</button>
+      <button class="seg-chip" data-seats="11">11</button>
+      <button class="seg-chip" data-seats="12">12</button>
+    </div>
+    <h4 class="mode-h">House rules</h4>
+    <div class="toggles switch-toggles" id="room-toggles"></div>
+    <button id="btn-create" class="btn primary big mode-cta">＋ Create Room</button>
   </div>
 
-  <div class="panel tile-panel hidden" id="panel-wild">
-    <h2><span class="h2-dot"></span>🌈 Go Wild</h2>
-    <p class="muted">All Wild mode: every single card plays on everything — chaos! Action effects (+2, +4, Skip…) still bite.</p>
-    <label class="field inline">Bots
-      <select id="in-bots-wild"><option value="1">1</option><option value="2" selected>2</option><option value="3">3</option></select>
-    </label>
-    <button id="btn-wild" class="btn primary big">🌈 Play Go Wild</button>
-  </div>
-
-  <div class="panel panel-friends tile-panel hidden" id="panel-friends">
-    <h2><span class="h2-dot"></span>Play with friends</h2>
-    <label class="field inline">Mode
-      <select id="in-mode"><option value="classic">Classic</option><option value="2v2">Team Mode (even tables)</option></select>
-    </label>
-    <label class="field inline">Seats
-      <select id="in-seats">
-        <option value="2">2 players</option>
-        <option value="3">3 players</option>
-        <option value="4" selected>4 players</option>
-        <option value="5">5 players</option>
-        <option value="6">6 players</option>
-        <option value="7">7 players</option>
-        <option value="8">8 players</option>
-        <option value="9">9 players</option>
-        <option value="10">10 players</option>
-        <option value="11">11 players</option>
-        <option value="12">12 players</option>
-      </select>
-    </label>
-    <div class="toggles" id="room-toggles"></div>
-    <button id="btn-create" class="btn primary big">＋ Create a Room</button>
-    <div class="join-row">
+  <div class="mode-card">
+    <h3 class="mode-card-h">🔑 Join a Room</h3>
+    <div class="join-row big">
       <input id="in-code" type="text" maxlength="6" placeholder="ROOM CODE" autocomplete="off">
-      <button id="btn-join" class="btn">Join</button>
+      <button id="btn-join" class="btn primary">Join</button>
     </div>
   </div>
 
@@ -150,17 +221,39 @@
       <li>Match the top card by <b>color</b>, <b>number</b> or <b>symbol</b>. Each player starts with 7 cards.</li>
       <li><b>Skip</b> — next player loses a turn. <b>Reverse</b> — play flips direction (works like Skip with 2 players). <b>+2</b> — next player draws 2 and loses a turn.</li>
       <li><b>Wild</b> — play on anything and pick the next color. <b>Wild +4</b> — same, and the next player draws 4.</li>
-      <li><b>Stacking (on):</b> answer a +2 with your own +2, or a +4 with your own +4 — the pile grows until someone can't stack and takes it all.</li>
-      <li><b>+4 Challenge (on):</b> think the +4 was a bluff (they held the color)? Challenge! Bluff caught — they draw 4. Wrong — you draw 6.</li>
+      <li><b>Stacking (on):</b> answer a +2 with a +2 or a +4 — but a +4 can only be answered with another +4. The pile grows until someone can't stack and takes it all.</li>
+      <li><b>+4 Challenge (on):</b> think the +4 was a bluff (they held the color)? Challenge! Bluff caught — they draw the pile. Wrong — you draw it plus 2.</li>
       <li><b>UNO:</b> playing down to one card? Tap the UNO button or you can be caught — caught means drawing 2 penalty cards.</li>
       <li><b>All Wild (optional):</b> every card plays on everything. Action effects still apply.</li>
       <li><b>Scoring:</b> win a round to score the value of everyone's leftover cards — numbers at face value, action cards 20, Wilds 50. First to 500 takes the match.</li>
-      <li><b>Quick Match:</b> a single round against 3 bots for a coin stake — win the round, take the pot (stake × 4). Coins are free play money kept in your account; the daily gift refills them.</li>
+      <li><b>Quick Match:</b> a single round against another live player for a coin stake — win the round, take the pot (both stakes). Coins are free play money kept in your account; the daily gift refills them.</li>
+      <li><b>Go Wild:</b> a live match where every card is wild. <b>Bots</b> live only in the Play vs Bots slot.</li>
       <li><b>Your account:</b> everyone plays with a free account — your mobile number is your login, and your Player ID (like ID: 1007) is yours forever. Your coins, wins and photo live in your profile: tap your name chip at the top to open it.</li>
       <li>You have <b>30 seconds</b> per turn. Run out and you draw automatically.</li>
     </ul>
   </details>
-  <p id="home-error" class="error"></p>
+</section>
+
+<!-- ======================= ABOUT ======================= -->
+<section id="view-about" class="view mode-view mode-about hidden">
+  <button class="mode-back" data-back>‹ Lobby</button>
+  <div class="about-head">
+    <div class="brand-cards" aria-hidden="true">
+      <span class="mini-card red">7</span><span class="mini-card blue">2</span><span class="mini-card green">5</span><span class="mini-card yellow">9</span>
+    </div>
+    <h2 class="logo about-logo"><span class="logo-uno">UNO</span> <span class="logo-adda">Adda</span></h2>
+    <p class="about-tagline">আড্ডার আসল ঠিকানা!</p>
+  </div>
+  <div id="about-text" class="about-text"></div>
+  <div class="mode-card about-features">
+    <p>⚡ <b>Quick Match</b> — লাইভ খেলোয়াড়ের সাথে এক রাউন্ড, জিতলেই পট</p>
+    <p>🌈 <b>Go Wild</b> — লাইভ All Wild, সব কার্ডই ওয়াইল্ড</p>
+    <p>👥 <b>Friend Rooms</b> — সর্বোচ্চ ১২ জন, ভয়েস চ্যাটসহ 🎙️</p>
+    <p>🤖 <b>Bot Practice</b> — বটদের সাথে প্র্যাকটিস, যখন খুশি</p>
+    <p>🪙 <b>সম্পূর্ণ ফ্রি</b> — ফ্রি কয়েন, প্রতিদিনের গিফট 🎁 আর লিডারবোর্ড 🏆</p>
+  </div>
+  <p class="about-made">Made with ❤️ in Habiganj, Bangladesh</p>
+  <p class="about-version muted">UNO Adda · Version <span id="about-version">4.0</span></p>
 </section>
 
 <!-- ======================= LOBBY ======================= -->
@@ -174,6 +267,7 @@
     <button id="btn-start" class="btn primary hidden">Start Game</button>
     <button id="btn-leave-lobby" class="btn danger">Leave</button>
   </div>
+  <p id="start-hint" class="muted start-hint"></p>
   <p id="lobby-error" class="error"></p>
   <div class="voice-panel panel hidden">
     <div class="voice-head">🎤 Voice chat <span class="voice-status muted"></span></div>
@@ -207,6 +301,9 @@
       <div id="pile-area">
         <div class="pile-wrap">
           <div id="draw-pile" class="card back" title="Draw a card"><span>UNO<br>Adda</span></div>
+          <div id="draw-hint" class="draw-hint hidden" aria-hidden="true">
+            <svg viewBox="0 0 64 64" class="draw-hint-hand"><path d="M32 6c3 0 5 2 5 5v14l8-3c2-1 5 0 6 2l4 9c3 7 2 14-2 19-4 6-10 8-17 8H26c-6 0-11-3-14-8L6 40c-1-3 0-6 3-7 2-1 5 0 6 2l2 4V14c0-3 2-5 5-5s5 2 5 5V11c0-3 2-5 5-5z" fill="#ffd94d" stroke="#8a6d00" stroke-width="2.5" stroke-linejoin="round"/></svg>
+          </div>
           <div id="draw-count" class="pile-count"></div>
         </div>
         <div id="discard-pile"></div>
@@ -225,8 +322,9 @@
   </div>
 
   <div id="my-area">
-    <div id="my-seat"><span id="my-avatar" class="my-avatar av av0"></span><div id="my-info"></div></div>
+    <div id="my-seat"><span class="av-wrap"><span id="my-avatar" class="my-avatar av av0"></span><svg id="my-ring" class="turn-ring hidden" viewBox="0 0 52 52" aria-hidden="true"><circle class="turn-ring-bg" cx="26" cy="26" r="23"/><circle class="turn-ring-fg" cx="26" cy="26" r="23"/></svg></span><div id="my-info"></div></div>
     <div id="my-hand"></div>
+    <div id="hand-hint" class="hand-hint hidden"></div>
   </div>
 
   <div class="voice-panel panel slim hidden">
@@ -267,6 +365,7 @@
     <p id="end-match"></p>
     <p id="end-payout" class="hidden"></p>
     <table id="end-table"></table>
+    <div id="end-scorecard"></div>
     <button id="btn-again" class="btn primary big">Play Next Round</button>
     <button id="btn-quick-again" class="btn primary big hidden">↻ Play Again</button>
     <p id="end-wait" class="muted hidden">Waiting for the host to start the next round…</p>
@@ -274,21 +373,33 @@
   </div>
 </div>
 
-<!-- quick match: matchmaking -->
+<!-- live matchmaking: searching / not found -->
 <div id="mm-modal" class="modal hidden">
   <div class="modal-box">
-    <h3>⚡ Finding players…</h3>
-    <div id="mm-slots" class="mm-slots"></div>
-    <p class="muted">Quick Match · one round · winner takes the pot</p>
+    <div id="mm-searching">
+      <h3 id="mm-title">⚡ Finding a live player…</h3>
+      <div class="mm-spinner" aria-hidden="true"></div>
+      <div id="mm-slots" class="mm-slots"></div>
+      <p id="mm-pool-label" class="muted">Quick Match · one round · winner takes the pot</p>
+      <p id="mm-elapsed" class="mm-elapsed">Searching… 0s</p>
+      <button id="btn-mm-cancel" class="btn danger">Cancel</button>
+    </div>
+    <div id="mm-notfound" class="hidden">
+      <h3>😔 প্লেয়ার পাওয়া যায়নি</h3>
+      <p class="mm-notfound-text">কোনো লাইভ প্লেয়ার পাওয়া যায়নি 😔<br>No live player found — please try again later, or play in another slot.</p>
+      <button id="btn-mm-retry" class="btn primary big">আবার চেষ্টা করুন · Try again</button>
+      <button id="btn-mm-bots" class="btn big">🤖 বটদের সাথে খেলুন · Play vs Bots</button>
+    </div>
   </div>
 </div>
 
-<!-- quick match: VS screen -->
+<!-- live match: VS screen -->
 <div id="vs-modal" class="modal hidden">
   <div class="modal-box vs-box">
-    <div class="vs-you"><span id="vs-my-avatar" class="avatar av0"></span><b id="vs-my-name"></b></div>
+    <div class="vs-you"><span id="vs-my-avatar" class="avatar av0"></span><b id="vs-my-name"></b><span id="vs-my-badge" class="badge-tier"></span></div>
     <div class="vs-word">VS</div>
     <div id="vs-opps" class="vs-opps"></div>
+    <p id="vs-sub" class="muted"></p>
   </div>
 </div>
 
@@ -303,6 +414,7 @@
       </span>
     </label>
     <p class="profile-meta"><span id="profile-id">ID: —</span> · <span id="profile-phone"></span></p>
+    <p id="profile-badge" class="badge-tier"></p>
     <div class="profile-stats">
       <div><b id="stat-matches">0</b><span>Matches</span></div>
       <div><b id="stat-wins">0</b><span>Wins</span></div>
@@ -321,9 +433,109 @@
     </div>
     <button id="btn-photo" class="btn">📷 Change photo</button>
     <input id="photo-file" type="file" accept="image/*" class="hidden">
+    <h4 class="profile-h">Table skin <span class="muted">(only you see your skin)</span></h4>
+    <div class="skin-grid">
+      <button class="skin-pick" data-skin="green"><span class="skin-swatch skin-green"></span>Classic Green</button>
+      <button class="skin-pick" data-skin="blue"><span class="skin-swatch skin-blue"></span>Royal Blue</button>
+      <button class="skin-pick" data-skin="purple"><span class="skin-swatch skin-purple"></span>Deep Purple</button>
+    </div>
     <div class="profile-actions">
+      <button id="btn-admin" class="btn hidden">🛡️ Admin Panel</button>
       <button id="btn-logout" class="btn danger">Log out</button>
       <button id="btn-profile-close" class="btn primary">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- notifications inbox -->
+<div id="inbox-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3>🔔 Notifications</h3>
+    <p id="inbox-push-hint" class="inbox-hint hidden">ব্রাউজার সেটিংসে নোটিফিকেশন বন্ধ আছে — ফোনে নোটিফিকেশন পেতে সাইট সেটিংস থেকে Notifications Allow করুন।</p>
+    <div id="inbox-enable-row" class="hidden">
+      <p class="muted">Get offers and news on your phone, even when the app is closed.</p>
+      <button id="btn-inbox-enable" class="btn primary">📲 নোটিফিকেশন চালু করুন</button>
+    </div>
+    <div id="inbox-rows"></div>
+    <div class="modal-actions">
+      <button id="btn-inbox-readall" class="btn">Mark all read</button>
+      <button id="btn-inbox-close" class="btn primary">Close</button>
+    </div>
+  </div>
+</div>
+
+<!-- admin control center (only rendered for admin accounts) -->
+<div id="admin-modal" class="modal hidden">
+  <div class="modal-box admin-box">
+    <h3>🛡️ Admin Panel</h3>
+    <div class="admin-tabs">
+      <button class="admin-tab active" data-atab="overview">📊 Overview</button>
+      <button class="admin-tab" data-atab="users">👥 Users</button>
+      <button class="admin-tab" data-atab="notify">📢 Notify</button>
+      <button class="admin-tab" data-atab="board">🏆 Board</button>
+      <button class="admin-tab" data-atab="rooms">🎮 Rooms</button>
+      <button class="admin-tab" data-atab="settings">⚙️ Settings</button>
+      <button class="admin-tab" data-atab="audit">📜 Activity</button>
+    </div>
+
+    <div class="admin-pane" data-apane="overview">
+      <div id="admin-stats" class="profile-stats"></div>
+      <p class="muted">Everything for UNO Adda, in one place. Coins are free play money.</p>
+    </div>
+
+    <div class="admin-pane hidden" data-apane="users">
+      <label class="field"><span class="field-label">Search users (name or phone)</span>
+        <span class="profile-name-row">
+          <input id="admin-user-q" type="text" autocomplete="off" placeholder="e.g. Tanvir or 017…">
+          <button id="btn-admin-search" class="btn small primary">Search</button>
+        </span>
+      </label>
+      <div id="admin-users"></div>
+      <div id="admin-user-detail" class="hidden"></div>
+    </div>
+
+    <div class="admin-pane hidden" data-apane="notify">
+      <label class="field"><span class="field-label">Title</span>
+        <input id="adm-n-title" type="text" maxlength="80" placeholder="e.g. 🎉 নতুন অফার!">
+      </label>
+      <label class="field"><span class="field-label">Message</span>
+        <textarea id="adm-n-body" rows="3" maxlength="500" placeholder="সবাইকে জানাতে চান এমন খবর…"></textarea>
+      </label>
+      <label class="field"><span class="field-label">Send to (phone — খালি রাখলে সবাইকে / empty = everyone)</span>
+        <input id="adm-n-phone" type="tel" maxlength="11" placeholder="All users">
+      </label>
+      <button id="btn-adm-notify" class="btn primary big">📢 Send notification</button>
+      <h4 class="profile-h">History</h4>
+      <div id="admin-history"></div>
+    </div>
+
+    <div class="admin-pane hidden" data-apane="board">
+      <div id="admin-board"></div>
+      <button id="btn-adm-board-reset" class="btn danger">Reset leaderboard</button>
+    </div>
+
+    <div class="admin-pane hidden" data-apane="rooms">
+      <div id="admin-rooms"></div>
+      <button id="btn-adm-rooms-refresh" class="btn">↻ Refresh</button>
+    </div>
+
+    <div class="admin-pane hidden" data-apane="settings">
+      <label class="field"><span class="field-label">Lobby announcement (সবার লবিতে দেখাবে)</span>
+        <textarea id="adm-s-announce" rows="2" maxlength="300" placeholder="e.g. 🏆 আজ রাত ৯টায় টুর্নামেন্ট!"></textarea>
+      </label>
+      <label class="check-row"><input id="adm-s-maintenance" type="checkbox"> Maintenance mode (সব লগইন/খেলা বন্ধ, অ্যাডমিন ছাড়া)</label>
+      <label class="field"><span class="field-label">About Us text (⋯ মেনুর About পেজে দেখাবে)</span>
+        <textarea id="adm-s-about" rows="6" maxlength="4000"></textarea>
+      </label>
+      <button id="btn-adm-settings-save" class="btn primary">Save settings</button>
+    </div>
+
+    <div class="admin-pane hidden" data-apane="audit">
+      <div id="admin-audit"></div>
+    </div>
+
+    <div class="modal-actions">
+      <button id="btn-admin-close" class="btn primary">Close</button>
     </div>
   </div>
 </div>

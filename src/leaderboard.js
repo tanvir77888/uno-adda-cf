@@ -44,6 +44,28 @@ export class LeaderboardDO {
   }
 
   async fetch(request) {
+    const url = new URL(request.url);
+    // Internal admin routes — reachable ONLY through the DO binding
+    // (the Worker never routes these paths publicly).
+    if (url.pathname === '/internal/list' && request.method === 'GET') {
+      const rows = this.ctx.storage.sql
+        .exec('SELECT name, avatar, wins, coins, photo FROM entries ORDER BY coins DESC, wins DESC, updated ASC LIMIT 50')
+        .toArray();
+      return json({
+        entries: rows.map((r) => ({ name: r.name, avatar: r.avatar, wins: r.wins, coinsWon: r.coins, photo: r.photo || null })),
+      });
+    }
+    if (url.pathname === '/internal/remove' && request.method === 'POST') {
+      let body;
+      try { body = await request.json(); } catch { return json({ error: 'bad json' }, 400); }
+      const name = String((body && body.name) || '').trim();
+      if (name) this.ctx.storage.sql.exec('DELETE FROM entries WHERE name = ?', name);
+      return json({ ok: true });
+    }
+    if (url.pathname === '/internal/reset' && request.method === 'POST') {
+      this.ctx.storage.sql.exec('DELETE FROM entries');
+      return json({ ok: true });
+    }
     if (request.method === 'POST') {
       let body;
       try {

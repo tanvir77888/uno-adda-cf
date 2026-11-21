@@ -135,8 +135,8 @@ function makePage(token) {
       window.AudioContext = class {
         constructor() { this.currentTime = 0; this.destination = {}; this.state = 'running'; }
         resume() { return Promise.resolve(); }
-        createOscillator() { return { connect() {}, start() {}, stop() {}, type: '', frequency: { setValueAtTime() {}, exponentialRampToValueAtTime() {} } }; }
-        createGain() { return { connect() {}, gain: { setValueAtTime() {}, exponentialRampToValueAtTime() {} } }; }
+        createOscillator() { return { connect() {}, start() {}, stop() {}, type: '', frequency: { setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} } }; }
+        createGain() { return { connect() {}, gain: { setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} } }; }
         createBuffer() { return { getChannelData: () => new Float32Array(8) }; }
         createBufferSource() { return { connect() {}, start() {}, stop() {}, buffer: null }; }
         createBiquadFilter() { return { connect() {}, type: '', frequency: { setValueAtTime() {}, exponentialRampToValueAtTime() {} }, Q: { value: 0 } }; }

@@ -5,8 +5,11 @@
  * (~/workspace/uno-adda-v2/game.js), only the module system changed
  * (CommonJS -> ESM named exports).
  * Clean-room implementation of standard UNO rules plus Tanvir's house rules:
- * stacking (+2 on +2, +4 on +4), Wild Draw Four challenge, UNO call + catch
- * penalty, 7 starting cards, optional All Wild mode.
+ * stacking judged by the MOST RECENT draw card (pendingKind): a pending
+ * +2 may be stacked with a +2 OR a Wild +4, but a pending +4 may be
+ * stacked ONLY with another Wild +4 (a +2 never goes on a +4); the
+ * pending total accumulates either way. Wild Draw Four challenge, UNO
+ * call + catch penalty, 7 starting cards, optional All Wild mode.
  * The server drives this for both bot games and online rooms.
  */
 
@@ -144,7 +147,11 @@ function legalPlays(state, seatId) {
   }
   if (state.pendingDraw > 0) {
     if (!state.rules.stacking) return [];
-    return hand.filter(c => c.kind === state.pendingKind);
+    // Stacking matrix (house rule, judged by the latest draw card):
+    // pending +2 -> +2 or +4 stacks; pending +4 -> +4 only.
+    return hand.filter(c => state.pendingKind === 'draw2'
+      ? (c.kind === 'draw2' || c.kind === 'wild4')
+      : c.kind === 'wild4');
   }
   return hand.filter(c => canPlayOn(state, c));
 }
@@ -198,9 +205,14 @@ function applyPlay(state, seatId, cardId, opts = {}) {
 
   const stackingPlay = state.pendingDraw > 0;
   if (stackingPlay) {
-    if (!state.rules.stacking || card.kind !== state.pendingKind)
+    // Same matrix as legalPlays: on a +2-led pending a +2 or +4 stacks;
+    // on a +4-led pending ONLY a +4 stacks.
+    const stackable = state.pendingKind === 'draw2'
+      ? (card.kind === 'draw2' || card.kind === 'wild4')
+      : card.kind === 'wild4';
+    if (!state.rules.stacking || !stackable)
       return err(state.pendingKind === 'draw2'
-        ? 'You must stack a +2 or take the cards'
+        ? 'You must stack a +2 or +4 or take the cards'
         : 'You must stack a +4, challenge, or take the cards');
   } else if (!canPlayOn(state, card)) {
     return err('That card does not match the color, number or symbol');
@@ -224,8 +236,9 @@ function applyPlay(state, seatId, cardId, opts = {}) {
   if (hand.length === 0) {
     if (card.kind === 'draw2' || card.kind === 'wild4') {
       const victim = state.seats[(state.turnIdx + state.direction + state.seats.length) % state.seats.length];
-      drawCards(state, victim, card.kind === 'draw2' ? 2 : 4);
-      events.push({ type: 'final_draw', seatId: victim });
+      const n = card.kind === 'draw2' ? 2 : 4;
+      drawCards(state, victim, n);
+      events.push({ type: 'final_draw', seatId: victim, count: n });
     }
     return finishRound(state, seatId, events);
   }
@@ -336,8 +349,12 @@ function applyChallenge(state, seatId) {
   if (state.unoSuspect === seatId || state.unoSuspect === accused) state.unoSuspect = null;
 
   if (bluff) {
-    drawCards(state, accused, 4);
-    events.push({ type: 'challenge_won', seatId, accused });
+    // The bluffer eats the whole pile they built on: the accumulated
+    // pending total up to and including their +4 (challenge is only
+    // possible while that +4 is the latest pending card, so `total` is
+    // exactly that). E.g. +2 stacked with a bluffed +4 -> accused draws 6.
+    drawCards(state, accused, total);
+    events.push({ type: 'challenge_won', seatId, accused, count: total });
     // challenger keeps the turn and plays normally
   } else {
     drawCards(state, seatId, total + 2);

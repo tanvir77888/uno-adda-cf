@@ -24,6 +24,11 @@ class_name = "LeaderboardDO"
 name = "ACCOUNTS"
 class_name = "AccountsDO"
 
+# Singleton live-matchmaking queues (Quick tiers + Go Wild).
+[[durable_objects.bindings]]
+name = "MATCHMAKER"
+class_name = "MatchmakerDO"
+
 # SQLite-backed Durable Objects — the class type available on the free plan.
 [[migrations]]
 tag = "v1"
@@ -38,3 +43,18 @@ new_sqlite_classes = ["LeaderboardDO"]
 [[migrations]]
 tag = "v3"
 new_sqlite_classes = ["AccountsDO"]
+
+# matchmaker: adds the matchmaking class only; existing storage untouched.
+[[migrations]]
+tag = "v4"
+new_sqlite_classes = ["MatchmakerDO"]
+
+[vars]
+# Web Push (VAPID): the public key is safe to ship; the matching private
+# key is a Worker SECRET (wrangler secret put VAPID_PRIVATE_KEY) and is
+# never committed.
+VAPID_PUBLIC_KEY = "BL7aG9o6c-Fe38Ic5bqhxiN7okOBzElUMigiUxo3LUPXvOP1CTde_ph3E52VQyyyUZ7a3duj9jt6yMUgPN_nuLI"
+# Bootstrap admin: the account with this phone becomes admin at signup
+# and is re-asserted at every login. EMPTY = no bootstrap admin.
+# Fill this in at deploy time (parent handles it).
+ADMIN_PHONE = "01761427351"

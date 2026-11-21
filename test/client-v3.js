@@ -31,7 +31,7 @@ function installFakeApi(window, opts) {
   const acct = {
     playerId: 1007, phone: '01712345678', name: opts.name || 'Player',
     photo: null, avatar: 0, coins: opts.coins != null ? opts.coins : 500,
-    matches: 0, wins: 0, coinsWon: 0,
+    matches: 0, wins: opts.wins || 0, coinsWon: 0,
   };
   const state = {
     acct,
@@ -40,6 +40,7 @@ function installFakeApi(window, opts) {
     adjustCalls: 0,
     failAdjust: !!opts.failAdjust,
     statsCalls: 0,
+    pushSub: null,
   };
   window.__acct = acct;
   window.__fakeState = state;
@@ -52,6 +53,7 @@ function installFakeApi(window, opts) {
     playerId: acct.playerId, phone: acct.phone, name: acct.name,
     photo: acct.photo, avatar: acct.avatar, coins: acct.coins,
     matches: acct.matches, wins: acct.wins, coinsWon: acct.coinsWon,
+    isAdmin: !!opts.isAdmin, banned: false,
   });
   window.fetch = async (url, init) => {
     const u = String(url);
@@ -92,6 +94,13 @@ function installFakeApi(window, opts) {
       acct.coinsWon += Math.max(0, Math.min(1000, Number(body.coinsWon) || 0));
       return json(200, { matches: acct.matches, wins: acct.wins, coinsWon: acct.coinsWon });
     }
+    if (u === '/api/settings') return json(200, { announcement: '', maintenance: false, aboutText: opts.aboutText || '' });
+    if (u === '/api/notifications/unread-count') return json(200, { count: 0 });
+    if (u === '/api/notifications') return json(200, { notifications: [] });
+    if (u === '/api/notifications/read') return json(200, { ok: true });
+    if (u === '/api/push/vapid-public-key') return json(200, { publicKey: 'BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' });
+    if (u === '/api/push/subscribe') { state.pushSub = body.subscription || body; return json(200, { ok: true }); }
+    if (u === '/api/turn-credentials') return json(200, { iceServers: [{ urls: ['stun:stun.l.google.com:19302'] }] });
     if (u === '/api/leaderboard' && init && init.method === 'POST') return json(200, { ok: true });
     if (u === '/api/leaderboard') {
       if (window.__boardFail) throw new Error('offline');
@@ -132,6 +141,82 @@ function makePage(opts = {}) {
       FakeWebSocket.OPEN = 1;
       window.WebSocket = FakeWebSocket;
       window.HTMLMediaElement.prototype.play = function () { return Promise.resolve(); };
+      // ---- WebRTC fakes: enough of the surface for the voice code —
+      // offers fire via onnegotiationneeded when a track is added,
+      // exactly like the real thing.
+      window.__rtcPeers = [];
+      window.RTCSessionDescription = class { constructor(d) { Object.assign(this, d); } };
+      window.RTCIceCandidate = class { constructor(c) { this.candidate = c; Object.assign(this, c || {}); } };
+      window.RTCPeerConnection = class {
+        constructor(config) {
+          this.config = config;
+          this.localDescription = null;
+          this.remoteDescription = null;
+          this.signalingState = 'stable';
+          this.connectionState = 'new';
+          this.addedIce = [];
+          this.tracks = [];
+          window.__rtcPeers.push(this);
+        }
+        addTrack(track) {
+          this.tracks.push(track);
+          queueMicrotask(() => { if (this.onnegotiationneeded) this.onnegotiationneeded(); });
+        }
+        async createOffer() { return { type: 'offer', sdp: 'fake-offer' }; }
+        async createAnswer() { return { type: 'answer', sdp: 'fake-answer' }; }
+        async setLocalDescription(d) {
+          if (d && d.type === 'rollback') { this.signalingState = 'stable'; return; }
+          this.localDescription = d;
+          this.signalingState = d && d.type === 'offer' ? 'have-local-offer' : 'stable';
+        }
+        async setRemoteDescription(d) {
+          this.remoteDescription = d;
+          this.signalingState = d && d.type === 'offer' ? 'have-remote-offer' : 'stable';
+        }
+        async addIceCandidate(c) { this.addedIce.push(c); }
+        close() { this.connectionState = 'closed'; }
+      };
+      const fakeStream = { getTracks: () => [{ kind: 'audio', stop() {}, enabled: true }], getAudioTracks: () => [{ kind: 'audio', stop() {}, enabled: true }] };
+      Object.defineProperty(window.navigator, 'mediaDevices', {
+        value: { getUserMedia: async () => fakeStream }, configurable: true,
+      });
+      // ---- speech synthesis mock (announcements)
+      window.__utterances = [];
+      window.SpeechSynthesisUtterance = class { constructor(text) { this.text = text; } };
+      window.speechSynthesis = {
+        speaking: false,
+        getVoices: () => [{ lang: 'en-US', name: 'Fake' }],
+        speak: (u) => { window.__utterances.push(u.text); },
+        cancel: () => {},
+      };
+      // ---- push environment (Addition 10), only when asked
+      if (opts.push) {
+        const perm = opts.push;
+        window.__permAsked = 0;
+        window.Notification = Object.assign(function Notification() {}, {
+          permission: perm.permission,
+          requestPermission: async () => {
+            window.__permAsked++;
+            window.Notification.permission = perm.result;
+            return perm.result;
+          },
+        });
+        window.PushManager = class {};
+        const fakeSub = {
+          endpoint: 'https://push.test/abc',
+          toJSON() { return { endpoint: this.endpoint, keys: { p256dh: 'BPx', auth: 'auth1' } }; },
+        };
+        const fakeReg = {
+          pushManager: {
+            getSubscription: async () => null,
+            subscribe: async () => fakeSub,
+          },
+        };
+        Object.defineProperty(window.navigator, 'serviceWorker', {
+          value: { register: async () => fakeReg, ready: Promise.resolve(fakeReg) },
+          configurable: true,
+        });
+      }
       installFakeApi(window, opts);
     },
   });
@@ -195,7 +280,9 @@ async function main() {
   {
     const dom = makePage({ token: true, coins: 30 });
     await sleep(150);
+    dom.window.document.querySelector('.tile[data-tile="quick"]').click();
     dom.window.document.querySelector('.tier[data-tier="master"]').click();
+    $(dom, 'btn-quick-find').click();
     await sleep(200);
     check('stake: insufficient balance never opens matchmaking', !shown($(dom, 'mm-modal')));
     check('stake: insufficient balance shows the block message', /Not enough coins/.test($(dom, 'home-error').textContent),
@@ -206,27 +293,33 @@ async function main() {
     dom.window.close();
   }
 
-  // ------------------------------------------------ stake refused by the server
+  // ------------------------------------------------ no stake while queueing (live redesign)
   {
-    const dom = makePage({ token: true, coins: 500, failAdjust: true });
+    const dom = makePage({ token: true, coins: 500 });
     await sleep(150);
+    dom.window.document.querySelector('.tile[data-tile="quick"]').click();
     dom.window.document.querySelector('.tier[data-tier="casual"]').click();
-    await sleep(200);
-    check('stake: server refusal aborts matchmaking', !shown($(dom, 'mm-modal')));
-    check('stake: server refusal surfaces an error', $(dom, 'home-error').textContent.length > 0,
-      $(dom, 'home-error').textContent);
-    check('stake: balance unchanged after refusal', balanceOf(dom).textContent === '500');
+    $(dom, 'btn-quick-find').click();
+    await sleep(250);
+    check('stake: Find Match opens the searching screen', shown($(dom, 'mm-modal')));
+    check('stake: NO wallet adjust happens while queueing', dom.window.__fakeState.adjustCalls === 0,
+      'adjustCalls=' + dom.window.__fakeState.adjustCalls);
+    check('stake: balance unchanged while searching', balanceOf(dom).textContent === '500');
+    const mmSock = dom.window.__sockets[dom.window.__sockets.length - 1];
+    const fm = mmSock.sent.find(m => m.type === 'find_match');
+    check('stake: find_match sent for pool quick:20', !!fm && fm.pool === 'quick:20', JSON.stringify(mmSock.sent));
     dom.window.close();
   }
 
-  // ------------------------------------------------ rescue path: 0 coins + gift claimed -> stake goes through
+  // ------------------------------------------------ rescue path: 0 coins + gift claimed -> refill, no deduction
   {
     const dom = makePage({ token: true, coins: 0, giftClaimed: true });
     await sleep(150);
-    dom.window.document.querySelector('.tier[data-tier="casual"]').click();
+    dom.window.document.querySelector('.tile[data-tile="quick"]').click();
+    $(dom, 'btn-quick-find').click(); // casual is pre-selected
     await sleep(300);
     check('rescue: broke player gets the refill and enters matchmaking', shown($(dom, 'mm-modal')));
-    check('rescue: balance is 100 refill − 20 stake = 80', balanceOf(dom).textContent === '80',
+    check('rescue: balance is the full 100 refill (stake moves only at match start)', balanceOf(dom).textContent === '100',
       'balance=' + balanceOf(dom).textContent);
     dom.window.close();
   }
@@ -343,6 +436,362 @@ async function main() {
     await sleep(60);
     check('intro: input works again once play begins', sock.sent.some(m => m.type === 'play_card'),
       'sent=' + JSON.stringify(sock.sent.map(m => m.type)));
+    dom.window.close();
+  }
+
+  // ------------------------------------------------ mode navigation (Addition 11)
+  {
+    const dom = makePage({ token: true });
+    await sleep(150);
+    const w = dom.window;
+    check('nav: the lobby itself contains no tier list / stake panel',
+      !$(dom, 'view-home').querySelector('#tier-list') && !$(dom, 'view-home').querySelector('.tile-panel'));
+    check('nav: lobby starts on the tiles', shown($(dom, 'view-home')) && !shown($(dom, 'view-quick')));
+    w.document.querySelector('.tile[data-tile="quick"]').click();
+    check('nav: Quick tile opens the Quick screen', shown($(dom, 'view-quick')) && !shown($(dom, 'view-home')));
+    check('nav: Quick screen has 4 tier cards', w.document.querySelectorAll('#view-quick .tier').length === 4);
+    w.document.querySelector('#view-quick .tier[data-tier="pro"]').click();
+    check('nav: tapping a tier selects it (no matchmaking yet)',
+      w.document.querySelector('#view-quick .tier[data-tier="pro"]').classList.contains('selected') && !shown($(dom, 'mm-modal')));
+    $(dom, 'btn-quick-find').click();
+    await sleep(200);
+    const mmSock = w.__sockets[w.__sockets.length - 1];
+    const fm = mmSock.sent.find(m => m.type === 'find_match');
+    check('nav: Find Match queues pool quick:100 for the Pro tier', !!fm && fm.pool === 'quick:100',
+      JSON.stringify(mmSock.sent));
+    $(dom, 'btn-mm-cancel').click();
+    await sleep(100);
+    check('nav: cancelling the search returns to the Quick screen, not the lobby',
+      shown($(dom, 'view-quick')) && !shown($(dom, 'view-home')) && !shown($(dom, 'mm-modal')));
+    w.document.querySelector('#view-quick [data-back]').click();
+    check('nav: back button returns to the lobby', shown($(dom, 'view-home')) && !shown($(dom, 'view-quick')));
+    // Bots screen Play path
+    w.document.querySelector('.tile[data-tile="bots"]').click();
+    check('nav: Bots tile opens the Bots screen', shown($(dom, 'view-bots')));
+    w.document.querySelector('#bots-pick-row .seg-card[data-bots="3"]').click();
+    $(dom, 'btn-bots').click();
+    await sleep(150);
+    const roomSock = w.__sockets[0];
+    const cbg = roomSock.sent.find(m => m.type === 'create_bot_game');
+    check('nav: Bots Play sends create_bot_game with the picked count', !!cbg && cbg.botCount === 3,
+      JSON.stringify(roomSock.sent.map(m => m.type)));
+    dom.window.close();
+  }
+
+  // ------------------------------------------------ voice: late joiner + ICE queue (Addition C)
+  {
+    const dom = makePage({ token: true });
+    await sleep(150);
+    const w = dom.window;
+    w.Element.prototype.getBoundingClientRect = () => ({ left: 100, top: 100, width: 60, height: 84, right: 160, bottom: 184, x: 100, y: 100 });
+    const sock = w.__sockets[w.__sockets.length - 1];
+    const seat = (id, isYou) => ({
+      id, name: 'P-' + id, isBot: false, ready: true, connected: true, inVoice: false,
+      avatar: 0, photo: null, wins: 0, team: null, score: 0, cardCount: 0, isCurrent: false, isYou: !!isYou,
+    });
+    sock.deliver({
+      type: 'state',
+      room: { code: 'VOICE1', mode: 'classic', rules: { stacking: true, challenge: true, allWild: false }, status: 'waiting', hostSeatId: 's1', roundNo: 0, quick: false, bet: 0, maxSeats: 4 },
+      you: { seatId: 's1', token: 'tok1' },
+      seats: [seat('s1', true), seat('s2', false)],
+      chat: [], events: [], game: null, lastRound: null, matchWinnerSeatId: null,
+    });
+    await sleep(60);
+    w.document.querySelector('.voice-join').click();
+    await sleep(300);
+    check('voice: Join Voice sends voice_join', sock.sent.some(m => m.type === 'voice_join'),
+      JSON.stringify(sock.sent.map(m => m.type)));
+    sock.deliver({ type: 'voice_roster', peers: ['s2'] });
+    await sleep(200);
+    check('voice: late joiner creates a peer connection for the existing member', w.__rtcPeers.length === 1,
+      'peers=' + w.__rtcPeers.length);
+    check('voice: the joiner offers to the existing member',
+      sock.sent.some(m => m.type === 'voice_signal' && m.toSeatId === 's2' && m.data && m.data.kind === 'offer'),
+      JSON.stringify(sock.sent.filter(m => m.type === 'voice_signal')));
+    check('voice: a remote <audio> element exists from the gesture path',
+      !!w.document.querySelector('#voice-audios audio'));
+    const pc = w.__rtcPeers[0];
+    sock.deliver({ type: 'voice_signal', fromSeatId: 's2', data: { kind: 'ice', candidate: { candidate: 'candidate:early', sdpMid: '0' } } });
+    await sleep(100);
+    check('voice: ICE arriving before the remote description is queued, not dropped', pc.addedIce.length === 0,
+      'addedIce=' + pc.addedIce.length);
+    sock.deliver({ type: 'voice_signal', fromSeatId: 's2', data: { kind: 'answer', sdp: { type: 'answer', sdp: 'fake' } } });
+    await sleep(150);
+    check('voice: queued ICE flushes after the answer lands', pc.addedIce.length === 1,
+      'addedIce=' + pc.addedIce.length);
+    dom.window.close();
+  }
+
+  // ------------------------------------------------ announcements + draw hint + invalid tap (Additions 4/7)
+  {
+    const dom = makePage({ token: true });
+    await sleep(150);
+    const w = dom.window;
+    w.Element.prototype.getBoundingClientRect = () => ({ left: 100, top: 100, width: 60, height: 84, right: 160, bottom: 184, x: 100, y: 100 });
+    w.document.dispatchEvent(new w.Event('pointerdown')); // first gesture unlocks speech
+    const sock = w.__sockets[w.__sockets.length - 1];
+    const C = (id, color, kind, value) => ({ id, color, kind, value: value || 0 });
+    const seat = (id, name, isYou, cardCount) => ({
+      id, name, isBot: false, ready: true, connected: true, inVoice: false,
+      avatar: 0, photo: null, wins: 0, team: null, score: 0, cardCount, isCurrent: id === 's2', isYou: !!isYou,
+    });
+    let topSeq = 0;
+    const playingState = (game, events) => ({
+      type: 'state',
+      room: { code: 'ANN123', mode: 'classic', rules: { stacking: true, challenge: true, allWild: false }, status: 'playing', hostSeatId: 's1', roundNo: 1, quick: false, bet: 0, maxSeats: 4 },
+      you: { seatId: 's1', token: 'tok1' },
+      seats: [seat('s1', 'Tanvir', true, game.yourHand.length), seat('s2', 'Rafi', false, 5)],
+      chat: [], events: events || [], game, lastRound: null, matchWinnerSeatId: null,
+    });
+    const baseGame = (over) => Object.assign({
+      phase: 'playing', topCard: C('top' + (++topSeq), 'red', 'number', 5), drawPileCount: 60, currentColor: 'red',
+      isYourTurn: false, youMustPickColor: false, pendingDraw: 0, pendingKind: null,
+      canChallenge: false, drewCardId: null, unoSuspect: null, direction: 1,
+      yourHand: [C('h1', 'red', 'number', 3)], legalCardIds: [], turnEndsAt: Date.now() + 30000,
+    }, over || {});
+
+    sock.deliver(playingState(baseGame(), [{ type: 'played', seatId: 's2', card: C('x1', 'blue', 'number', 8) }]));
+    await sleep(300);
+    check('speak: a played Blue 8 is announced', w.__utterances.includes('Blue 8'), JSON.stringify(w.__utterances));
+
+    sock.deliver(playingState(baseGame(), [
+      { type: 'played', seatId: 's2', card: C('x2', 'red', 'skip') },
+      { type: 'skipped', seatId: 's1' },
+    ]));
+    await sleep(300);
+    check('speak: a Skip on me announces "Tanvir block!"', w.__utterances.includes('Tanvir block!'), JSON.stringify(w.__utterances));
+
+    sock.deliver(playingState(baseGame({ pendingDraw: 2, pendingKind: 'draw2' }),
+      [{ type: 'pending', seatId: 's1', kind: 'draw2', total: 2 }]));
+    await sleep(300);
+    const pendingUtt = w.__utterances.find(u => /কার্ড তুলতে হবে/.test(u));
+    check('speak: pending +2 speaks the Bengali counter-or-draw line', !!pendingUtt && /ড্র কার্ড থাকলে মারো/.test(pendingUtt) && /২টা/.test(pendingUtt),
+      pendingUtt || JSON.stringify(w.__utterances));
+
+    const beforeBurst = w.__utterances.length;
+    sock.deliver(playingState(baseGame(), [
+      { type: 'played', seatId: 's2', card: C('y1', 'green', 'number', 1) },
+      { type: 'played', seatId: 's2', card: C('y2', 'green', 'number', 2) },
+      { type: 'played', seatId: 's2', card: C('y3', 'yellow', 'number', 9) },
+    ]));
+    await sleep(300);
+    const burstCount = w.__utterances.length - beforeBurst;
+    check('speak: a 3-event bot burst coalesces to at most 2 utterances', burstCount >= 1 && burstCount <= 2,
+      'burst=' + burstCount);
+
+    $(dom, 'btn-sound').click(); // sound off
+    const beforeMute = w.__utterances.length;
+    sock.deliver(playingState(baseGame(), [{ type: 'played', seatId: 's2', card: C('z1', 'blue', 'number', 4) }]));
+    await sleep(300);
+    check('speak: sound toggle off means zero speech', w.__utterances.length === beforeMute);
+    $(dom, 'btn-sound').click(); // back on
+
+    // Draw hint: my turn, nothing playable -> finger shows; playable -> hides.
+    sock.deliver(playingState(baseGame({ isYourTurn: true, yourHand: [C('h9', 'blue', 'number', 9)], legalCardIds: [] }), []));
+    await sleep(120);
+    check('hint: draw finger shows when I must draw', !$(dom, 'draw-hint').classList.contains('hidden'));
+    sock.deliver(playingState(baseGame({ isYourTurn: true, yourHand: [C('h9', 'red', 'number', 9)], legalCardIds: ['h9'] }), []));
+    await sleep(120);
+    check('hint: draw finger hides once a card is playable', $(dom, 'draw-hint').classList.contains('hidden'));
+
+    // Invalid tap reasons.
+    sock.deliver(playingState(baseGame({
+      isYourTurn: true,
+      yourHand: [C('h7', 'blue', 'number', 7), C('h8', 'red', 'number', 2)],
+      legalCardIds: ['h8'],
+    }), []));
+    await sleep(120);
+    const badCard = [...w.document.querySelectorAll('#my-hand .card')].find(el => el.dataset.id === 'h7');
+    check('hint: the unplayable card is in the hand', !!badCard);
+    badCard.click();
+    await sleep(80);
+    check('hint: tapping an unplayable card shakes it', badCard.classList.contains('shake'));
+    check('hint: wrong-color reason is shown', /রঙ বা নম্বর মিলছে না/.test($(dom, 'hand-hint').textContent),
+      $(dom, 'hand-hint').textContent);
+    sock.deliver(playingState(baseGame({
+      isYourTurn: true, pendingDraw: 2, pendingKind: 'draw2',
+      yourHand: [C('h5', 'red', 'number', 5)], legalCardIds: [],
+    }), []));
+    await sleep(120);
+    const pendCard = w.document.querySelectorAll('#my-hand .card')[0];
+    pendCard.click();
+    await sleep(80);
+    check('hint: pending reason is shown', /আগে ড্র কার্ড মারুন বা কার্ড তুলুন/.test($(dom, 'hand-hint').textContent),
+      $(dom, 'hand-hint').textContent);
+    dom.window.close();
+  }
+
+  // ------------------------------------------------ timer ring + badges + skin + music (Additions 5/7)
+  {
+    const dom = makePage({ token: true, wins: 60 });
+    await sleep(150);
+    const w = dom.window;
+    w.Element.prototype.getBoundingClientRect = () => ({ left: 100, top: 100, width: 60, height: 84, right: 160, bottom: 184, x: 100, y: 100 });
+    const sock = w.__sockets[w.__sockets.length - 1];
+    const C = (id, color, kind, value) => ({ id, color, kind, value: value || 0 });
+    sock.deliver({
+      type: 'state',
+      room: { code: 'RING12', mode: 'classic', rules: { stacking: true, challenge: true, allWild: false }, status: 'playing', hostSeatId: 's1', roundNo: 1, quick: false, bet: 0, maxSeats: 4 },
+      you: { seatId: 's1', token: 'tok1' },
+      seats: [
+        { id: 's1', name: 'Tanvir', isBot: false, ready: true, connected: true, inVoice: false, avatar: 0, photo: null, wins: 60, team: null, score: 0, cardCount: 3, isCurrent: false, isYou: true },
+        { id: 's2', name: 'Rafi', isBot: false, ready: true, connected: true, inVoice: false, avatar: 1, photo: null, wins: 12, team: null, score: 0, cardCount: 4, isCurrent: true, isYou: false },
+      ],
+      chat: [], events: [],
+      game: {
+        phase: 'playing', topCard: C('t1', 'red', 'number', 5), drawPileCount: 60, currentColor: 'red',
+        isYourTurn: false, youMustPickColor: false, pendingDraw: 0, pendingKind: null,
+        canChallenge: false, drewCardId: null, unoSuspect: null, direction: 1,
+        yourHand: [C('h1', 'red', 'number', 3)], legalCardIds: [], turnEndsAt: Date.now() + 30000,
+      },
+      lastRound: null, matchWinnerSeatId: null,
+    });
+    await sleep(150);
+    const ring = w.document.querySelector('.turn-ring-fg');
+    check('ring: current player avatar carries a timer ring', !!ring);
+    const off1 = parseFloat(ring.style.strokeDashoffset || '0');
+    await sleep(800);
+    const off2 = parseFloat(ring.style.strokeDashoffset || '0');
+    check('ring: the ring depletes with the turn deadline', off2 > off1, off1 + ' -> ' + off2);
+    check('badge: a Bronze seat dot renders for a 12-win player', !!w.document.querySelector('.badge-dot.dot-bronze'));
+    // profile badge (account has 60 wins -> Silver)
+    $(dom, 'profile-chip').click();
+    check('badge: profile shows the Silver chip at 60 wins', /Silver/.test($(dom, 'profile-badge').textContent),
+      $(dom, 'profile-badge').textContent);
+    // skin persistence
+    w.document.querySelector('.skin-pick[data-skin="blue"]').click();
+    check('skin: picking Royal Blue persists + applies', w.localStorage.getItem('uno-adda-skin') === 'blue' && $(dom, 'view-game').classList.contains('skin-blue'));
+    $(dom, 'btn-profile-close').click();
+    // music toggle persistence (default on -> off -> on)
+    $(dom, 'btn-music').click();
+    check('music: toggle off persists', w.localStorage.getItem('uno-adda-music') === '0',
+      w.localStorage.getItem('uno-adda-music'));
+    $(dom, 'btn-music').click();
+    check('music: toggle on persists', w.localStorage.getItem('uno-adda-music') === '1');
+    dom.window.close();
+    // skin survives a fresh page
+    const dom2 = makePage({ token: true, storage: { 'uno-adda-skin': 'blue' } });
+    await sleep(150);
+    check('skin: saved skin applies on the next visit', $(dom2, 'view-game').classList.contains('skin-blue'));
+    dom2.window.close();
+  }
+
+  // ------------------------------------------------ photo merge (snapshot diet, client half)
+  {
+    const dom = makePage({ token: true });
+    await sleep(150);
+    const w = dom.window;
+    const sock = w.__sockets[w.__sockets.length - 1];
+    const PHOTO = 'data:image/jpeg;base64,QUJD';
+    const C = (id, color, kind, value) => ({ id, color, kind, value: value || 0 });
+    const mkState = (photo) => ({
+      type: 'state',
+      room: { code: 'DIET99', mode: 'classic', rules: { stacking: true, challenge: true, allWild: false }, status: 'playing', hostSeatId: 's1', roundNo: 1, quick: false, bet: 0, maxSeats: 4 },
+      you: { seatId: 's1', token: 'tok1' },
+      seats: [
+        { id: 's1', name: 'Tanvir', isBot: false, ready: true, connected: true, inVoice: false, avatar: 0, photo: null, wins: 0, team: null, score: 0, cardCount: 3, isCurrent: false, isYou: true },
+        { id: 's2', name: 'Rafi', isBot: false, ready: true, connected: true, inVoice: false, avatar: 1, photo, wins: 0, team: null, score: 0, cardCount: 4, isCurrent: true, isYou: false },
+      ],
+      chat: [], events: [],
+      game: {
+        phase: 'playing', topCard: C('t1', 'red', 'number', 5), drawPileCount: 60, currentColor: 'red',
+        isYourTurn: false, youMustPickColor: false, pendingDraw: 0, pendingKind: null,
+        canChallenge: false, drewCardId: null, unoSuspect: null, direction: 1,
+        yourHand: [C('h1', 'red', 'number', 3)], legalCardIds: [], turnEndsAt: Date.now() + 30000,
+      },
+      lastRound: null, matchWinnerSeatId: null,
+    });
+    sock.deliver(mkState(PHOTO));
+    await sleep(120);
+    check('diet: photo renders from the first playing state',
+      !!w.document.querySelector('#opponents img.avatar-img'));
+    sock.deliver(mkState(null)); // dieted state: photo omitted
+    await sleep(120);
+    const img = w.document.querySelector('#opponents img.avatar-img');
+    check('diet: photo still renders after a photo-less state (merged by seat id)',
+      !!img && img.getAttribute('src') === PHOTO, img && img.getAttribute('src'));
+    dom.window.close();
+  }
+
+  // ------------------------------------------------ push permission flow (Addition 10)
+  {
+    const dom = makePage({ token: true, push: { permission: 'default', result: 'granted' } });
+    await sleep(400);
+    check('push: entering the app asks for notification permission directly', dom.window.__permAsked >= 1,
+      'asked=' + dom.window.__permAsked);
+    check('push: on grant the subscription is POSTed silently',
+      !!dom.window.__fakeState.pushSub && dom.window.__fakeState.pushSub.endpoint === 'https://push.test/abc',
+      JSON.stringify(dom.window.__fakeState.pushSub));
+    dom.window.close();
+
+    const dom2 = makePage({ token: true, push: { permission: 'denied', result: 'denied' } });
+    await sleep(300);
+    check('push: a denied permission is never re-prompted', dom2.window.__permAsked === 0);
+    $(dom2, 'btn-bell').click();
+    await sleep(150);
+    check('push: the inbox shows the browser-settings hint when denied', shown($(dom2, 'inbox-push-hint')));
+    dom2.window.close();
+  }
+
+  // ------------------------------------------------ ⋯ menu + About screen (Addition 12)
+  {
+    const dom = makePage({ token: true });
+    await sleep(200);
+    const w = dom.window;
+    check('about: the ⋯ menu starts closed', !shown($(dom, 'more-menu')));
+    $(dom, 'btn-more').click();
+    check('about: the ⋯ menu opens with an About entry', shown($(dom, 'more-menu')) && /About Us/.test($(dom, 'btn-menu-about').textContent),
+      $(dom, 'btn-menu-about').textContent);
+    $(dom, 'btn-menu-about').click();
+    await sleep(100);
+    check('about: About opens its own screen', shown($(dom, 'view-about')) && !shown($(dom, 'view-home')));
+    check('about: tagline renders', /আড্ডার আসল ঠিকানা/.test($(dom, 'view-about').textContent));
+    check('about: with no server text the built-in default renders',
+      /সম্পূর্ণ ফ্রি অনলাইন কার্ড গেম/.test($(dom, 'about-text').textContent) && /আহমেদ তানভীর/.test($(dom, 'about-text').textContent),
+      $(dom, 'about-text').textContent.slice(0, 60));
+    check('about: version label shows 4.0', $(dom, 'about-version').textContent === '4.0');
+    check('about: Habiganj line renders', /Habiganj/.test($(dom, 'view-about').textContent));
+    w.document.querySelector('#view-about [data-back]').click();
+    check('about: back returns to the lobby', shown($(dom, 'view-home')));
+    dom.window.close();
+  }
+  {
+    // server-provided about text wins over the built-in default
+    const dom = makePage({ token: true, aboutText: 'কাস্টম অ্যাবাউট — সার্ভার থেকে এসেছে' });
+    await sleep(200);
+    $(dom, 'btn-more').click();
+    $(dom, 'btn-menu-about').click();
+    await sleep(100);
+    check('about: server text renders when /api/settings provides it',
+      /কাস্টম অ্যাবাউট — সার্ভার থেকে এসেছে/.test($(dom, 'about-text').textContent) &&
+      !/সম্পূর্ণ ফ্রি অনলাইন কার্ড গেম/.test($(dom, 'about-text').textContent),
+      $(dom, 'about-text').textContent.slice(0, 60));
+    dom.window.close();
+  }
+
+  // ------------------------------------------------ long-press hygiene (Addition 13)
+  {
+    const css = fs.readFileSync(path.join(PUBLIC, 'style.css'), 'utf8');
+    check('press: stylesheet disables user-select globally', /user-select:\s*none/.test(css) && /-webkit-user-select:\s*none/.test(css));
+    check('press: stylesheet disables the touch callout', /-webkit-touch-callout:\s*none/.test(css));
+    check('press: text fields keep normal selection (input exception)',
+      /input,\s*textarea[^{]*\{[^}]*user-select:\s*text/.test(css));
+    check('press: tap highlight is transparent', /-webkit-tap-highlight-color:\s*transparent/.test(css));
+    const dom = makePage({ token: true });
+    await sleep(150);
+    const w = dom.window;
+    const gameEv = new w.MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    w.document.getElementById('view-game').dispatchEvent(gameEv);
+    check('press: contextmenu on the game surface is prevented', gameEv.defaultPrevented === true);
+    const handEv = new w.MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    w.document.getElementById('my-hand').dispatchEvent(handEv);
+    check('press: contextmenu on the hand is prevented', handEv.defaultPrevented === true);
+    const inputEv = new w.MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+    w.document.getElementById('in-code').dispatchEvent(inputEv);
+    check('press: contextmenu inside a text input is NOT prevented', inputEv.defaultPrevented === false);
+    const dragEv = new w.Event('dragstart', { bubbles: true, cancelable: true });
+    w.document.getElementById('view-home').dispatchEvent(dragEv);
+    check('press: dragstart is prevented outside inputs', dragEv.defaultPrevented === true);
     dom.window.close();
   }
 
