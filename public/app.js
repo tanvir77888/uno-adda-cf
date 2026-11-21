@@ -52,7 +52,7 @@ function saveSession() {
 function tryRestore() {
   try {
     const s = JSON.parse(localStorage.getItem('uno-adda-session') || 'null');
-    if (s && s.code && s.token) send({ type: 'join_room', code: s.code, token: s.token, name: s.name });
+    if (s && s.code && s.token) send({ type: 'join_room', code: s.code, token: s.token, name: s.name, avatar: profile.avatar });
   } catch { /* nothing saved */ }
 }
 
@@ -74,23 +74,32 @@ $('in-name').value = localStorage.getItem('uno-adda-name') || '';
 $('in-name').addEventListener('change', () => localStorage.setItem('uno-adda-name', myName()));
 
 $('btn-bots').onclick = () => connect(() => send({
-  type: 'create_bot_game', name: myName(),
+  type: 'create_bot_game', name: myName(), avatar: profile.avatar,
   botCount: parseInt($('in-bots').value, 10), rules: readRules('bot-toggles'),
 }));
+$('btn-wild').onclick = () => connect(() => send({
+  type: 'create_bot_game', name: myName(), avatar: profile.avatar,
+  botCount: parseInt($('in-bots-wild').value, 10), rules: { stacking: true, challenge: true, allWild: true },
+}));
 $('btn-create').onclick = () => connect(() => send({
-  type: 'create_room', name: myName(), mode: $('in-mode').value, rules: readRules('room-toggles'),
+  type: 'create_room', name: myName(), avatar: profile.avatar, mode: $('in-mode').value, rules: readRules('room-toggles'),
 }));
 $('btn-join').onclick = () => {
   const code = $('in-code').value.trim().toUpperCase();
   if (code.length !== 6) return showError('Enter the 6-letter room code');
   routeCode = code; // the socket must land on that room's Durable Object
-  connect(() => send({ type: 'join_room', code, name: myName() }));
+  connect(() => send({ type: 'join_room', code, name: myName(), avatar: profile.avatar }));
 };
 
 // ------------------------------------------------------------ snapshot routing
 function onSnapshot(msg) {
+  fxRects = captureRects(); // DOM still shows the previous snapshot — flight sources
   routeCode = msg.room.code; // reconnects must return to this room's object
   saveSession();
+  if (msg.room.quick && quick) quick.charged = false; // the match exists — the stake is in play
+  settleQuick(msg);
+  countClassicMatchWin(msg);
+  if (!$('mm-modal').classList.contains('hidden')) renderMmSlots();
   const status = msg.room.status;
   showView(status === 'waiting' ? 'lobby' : 'game');
   if (status === 'waiting') renderLobby(msg); else renderGame(msg);
@@ -110,6 +119,17 @@ function showView(name) {
 }
 
 function showError(message) {
+  // A quick match that failed before it started refunds its stake.
+  if (quick && quick.charged && !$('mm-modal').classList.contains('hidden')) {
+    wallet.balance += quick.bet;
+    saveWallet();
+    paintWallet();
+    quick = null;
+    mmTimers.forEach(clearTimeout);
+    mmTimers = [];
+    $('mm-modal').classList.add('hidden');
+    $('vs-modal').classList.add('hidden');
+  }
   for (const id of ['home-error', 'lobby-error']) { const el = $(id); if (el) el.textContent = message; }
   if (snap) toast(message);
   if (/Room not found/.test(message)) localStorage.removeItem('uno-adda-session');
@@ -128,7 +148,7 @@ function renderLobby(msg) {
   const me = msg.seats.find(s => s.isYou);
   $('lobby-seats').innerHTML = msg.seats.map((s, i) => `
     <div class="seat-row" data-voice-mark="${s.id}">
-      <div class="avatar av${i % 4}"></div>
+      <div class="avatar av${s.avatar != null ? s.avatar : i % 4}"></div>
       <div class="grow"><b>${esc(s.name)}</b>${s.isYou ? ' (you)' : ''}${s.isBot ? ' 🤖' : ''}<br>
       <span class="muted">Score: ${s.score}</span></div>
       ${s.id === msg.room.hostSeatId ? '<span class="badge host">HOST</span>' : ''}
@@ -151,6 +171,7 @@ function leaveRoom() {
   leaveVoice(false);
   send({ type: 'leave' });
   routeCode = null;
+  quick = null;
   localStorage.removeItem('uno-adda-session');
   snap = null;
   showView('home');
@@ -162,10 +183,14 @@ function renderGame(msg) {
   const g = msg.game;
   const me = msg.seats.find(s => s.isYou);
 
+  $('game-mode-label').textContent = msg.room.quick
+    ? `⚡ Quick Match · stake ${msg.room.bet} · winner takes the pot`
+    : (msg.room.mode === '2v2' ? '👥 2v2 Teams' : '🎮 Classic') + ` · Round ${msg.room.roundNo || 1}`;
+
   // opponents
   $('opponents').innerHTML = msg.seats.filter(s => !s.isYou).map(s => `
     <div class="opp ${s.isCurrent ? 'current' : ''} ${s.connected ? '' : 'disc'}" data-voice-mark="${s.id}">
-      <div class="avatar av${msg.seats.indexOf(s) % 4}"></div>
+      <div class="avatar av${s.avatar != null ? s.avatar : msg.seats.indexOf(s) % 4}"></div>
       <div><b>${esc(s.name)}</b>${s.isBot ? ' 🤖' : ''}</div>
       <div class="muted">${s.cardCount} cards · ${s.score} pts${s.team ? ' · Team ' + s.team.toUpperCase() : ''}</div>
       <div class="backs">${backsHtml(Math.min(s.cardCount, 7))}</div>
@@ -284,18 +309,38 @@ function renderEnd(msg) {
   const lr = msg.lastRound;
   if (!lr) return;
   const winner = msg.seats.find(s => s.id === lr.winnerSeatId);
+  const isQuick = !!msg.room.quick;
   $('end-title').textContent = winner ? `🏆 ${winner.name} wins the round!` : 'Round over';
   const mw = msg.matchWinnerSeatId && msg.seats.find(s => s.id === msg.matchWinnerSeatId);
-  $('end-match').textContent = mw ? `🎉 ${mw.name} reached 500 and wins the match! Scores keep counting if you play on.` : `Round points: +${lr.teamPoints}`;
+  $('end-match').textContent = isQuick
+    ? '⚡ Quick Match — single round, winner takes the pot.'
+    : mw ? `🎉 ${mw.name} reached 500 and wins the match! Scores keep counting if you play on.` : `Round points: +${lr.teamPoints}`;
   $('end-table').innerHTML = '<tr><th>Player</th><th>Leftover cards</th><th>Total score</th></tr>' +
     msg.seats.map(s => `<tr><td>${esc(s.name)}${s.isYou ? ' (you)' : ''}</td><td>${lr.breakdown[s.id] ?? 0} pts</td><td>${s.score}</td></tr>`).join('');
   const isHost = msg.you.seatId === msg.room.hostSeatId;
-  $('btn-again').classList.toggle('hidden', !isHost);
-  $('end-wait').classList.toggle('hidden', isHost);
+  $('btn-again').classList.toggle('hidden', !isHost || isQuick);
+  $('end-wait').classList.toggle('hidden', isHost || isQuick);
+  $('btn-quick-again').classList.toggle('hidden', !isQuick);
+  $('btn-exit').textContent = isQuick ? 'Lobby' : 'Back to Home';
+  const pay = $('end-payout');
+  if (isQuick && quick && quick.settledKey === msg.room.code + '|' + msg.room.roundNo) {
+    pay.classList.remove('hidden');
+    pay.innerHTML = quick.payout > 0
+      ? `<img class="coin-ic" src="art/coin.webp" alt=""> You won the pot: +${quick.payout} coins!`
+      : `${winner ? esc(winner.name) : 'A bot'} took the pot — your ${msg.room.bet} coins are gone.`;
+  } else {
+    pay.classList.add('hidden');
+  }
   fxRoundEnd(msg, winner, mw);
   $('end-modal').classList.remove('hidden');
 }
 $('btn-again').onclick = () => { $('end-modal').classList.add('hidden'); send({ type: 'start_game' }); };
+$('btn-quick-again').onclick = () => {
+  const tier = quick && quick.tier;
+  $('end-modal').classList.add('hidden');
+  leaveRoom();
+  if (tier) startQuickMatch(tier);
+};
 $('btn-exit').onclick = () => { $('end-modal').classList.add('hidden'); leaveRoom(); };
 
 // ------------------------------------------------------------ chat
@@ -569,6 +614,7 @@ document.querySelectorAll('.voice-leave').forEach(b => { b.onclick = () => leave
 // Pure presentation: sounds, animations, confetti. Reads snapshots and
 // diffs them; never sends protocol messages and never touches game state.
 let fxPrev = null;
+let fxRects = null; // element rects captured just before each re-render (flight sources)
 let fxDealKey = '';
 let fxEndKey = '';
 let fxPopTimer = null;
@@ -584,8 +630,8 @@ function applyFxInner(msg) {
   const pg = fxPrev && fxPrev.game;
   const me = msg.seats.find(s => s.isYou);
 
-  // profile chip: my game avatar shows my seat's character (home chip is a static av0)
-  if (me) { const ma = $('my-avatar'); if (ma) ma.className = 'my-avatar av' + (msg.seats.indexOf(me) % 4); }
+  // profile chip: my game avatar shows my chosen character
+  if (me) { const ma = $('my-avatar'); if (ma) ma.className = 'my-avatar av' + (me.avatar != null ? me.avatar : msg.seats.indexOf(me) % 4); }
 
   // banner visibility + my-turn scene state
   const tb = $('turn-banner');
@@ -619,15 +665,23 @@ function applyFxInner(msg) {
 
   if (!pg) return;
 
-  // a card landed on the discard pile
+  // a card landed on the discard pile — fly it in from whoever played it
   if (g.topCard.id !== pg.topCard.id) {
     const top = document.querySelector('#discard-pile .card');
-    if (top) top.classList.add('played-in');
     sfx('play');
     const actor = msg.seats.find(s => {
       const p = fxPrev.seats.find(x => x.id === s.id);
       return p && s.cardCount < p.cardCount;
     });
+    let flew = false;
+    if (top && actor && fxRects) {
+      const toRect = top.getBoundingClientRect();
+      const from = actor.isYou
+        ? fxRects.hand[g.topCard.id]
+        : cardRectAround(fxRects.opps[actor.id], toRect.width, toRect.height);
+      if (from) flew = flyCard(cardHtml(g.topCard, false), from, toRect, top);
+    }
+    if (!flew && top) top.classList.add('played-in');
     if (actor && !actor.isYou) markOpp(actor.id, 'acted');
   }
 
@@ -635,10 +689,15 @@ function applyFxInner(msg) {
   const prevIds = new Set(pg.yourHand.map(c => c.id));
   const fresh = g.yourHand.filter(c => !prevIds.has(c.id));
   if (fresh.length && g.topCard.id === pg.topCard.id) {
-    for (const c of fresh) {
+    const drawRect = fxRects && fxRects.draw;
+    fresh.forEach((c, i) => {
       const el = handEl.querySelector('[data-id="' + c.id + '"]');
       if (el) el.classList.add('drew-in');
-    }
+      // fly a card-back in from the draw pile for the first few
+      if (el && drawRect && i < 3) {
+        setTimeout(() => flyCard('<div class="card back"><span>UNO<br>Adda</span></div>', drawRect, el.getBoundingClientRect(), el), i * 90);
+      }
+    });
     sfx('draw');
     handEl.scrollTo({ left: handEl.scrollWidth, behavior: 'smooth' });
   }
@@ -647,18 +706,26 @@ function applyFxInner(msg) {
   for (const s of msg.seats) {
     if (s.isYou) continue;
     const p = fxPrev.seats.find(x => x.id === s.id);
-    if (p && s.cardCount > p.cardCount) markOpp(s.id, 'drew-fx');
+    if (p && s.cardCount > p.cardCount) {
+      markOpp(s.id, 'drew-fx');
+      if (fxRects && fxRects.draw) {
+        const el = document.querySelector('#opponents .opp[data-voice-mark="' + s.id + '"]');
+        const to = el ? cardRectAround(el.getBoundingClientRect(), 40, 58) : null;
+        if (to) flyCard('<div class="card back"><span>UNO<br>Adda</span></div>', fxRects.draw, to, null);
+      }
+    }
   }
 
   // the turn came around to me
   if (g.isYourTurn && !pg.isYourTurn) sfx('ding');
 
-  // current color changed — pulse the gem
+  // current color changed — pulse the gem; a fresh Wild/+4 color bursts
   if (g.currentColor !== pg.currentColor) {
     const ci = $('color-indicator');
     ci.classList.remove('gem-pulse');
     void ci.offsetWidth;
     ci.classList.add('gem-pulse');
+    if (g.topCard.kind === 'wild' || g.topCard.kind === 'wild4') splashColor(g.currentColor);
   }
 }
 
@@ -670,6 +737,71 @@ function markOpp(seatId, cls) {
       el.classList.add(cls);
     }
   });
+}
+
+// ------------------------------------------------------------ card flights & splash
+// FLIP flights: rects of the pre-render DOM are captured in onSnapshot
+// (fxRects); a fixed-position clone then glides to the post-render target.
+// Purely decorative — any missing rect skips the flight silently.
+function captureRects() {
+  const r = { hand: {}, opps: {}, draw: null };
+  try {
+    document.querySelectorAll('#my-hand .card').forEach(el => { if (el.dataset.id) r.hand[el.dataset.id] = el.getBoundingClientRect(); });
+    document.querySelectorAll('#opponents .opp').forEach(el => { if (el.dataset.voiceMark) r.opps[el.dataset.voiceMark] = el.getBoundingClientRect(); });
+    const dp = $('draw-pile');
+    if (dp) r.draw = dp.getBoundingClientRect();
+  } catch { /* rects are best-effort */ }
+  return r;
+}
+
+function cardRectAround(rect, w, h) {
+  if (!rect || !rect.width) return null;
+  return { left: rect.left + rect.width / 2 - w / 2, top: rect.top + rect.height / 2 - h / 2, width: w, height: h };
+}
+
+function flyCard(html, fromRect, toRect, hideEl) {
+  if (!fromRect || !fromRect.width || !toRect || !toRect.width) return false;
+  const wrap = document.createElement('div');
+  wrap.className = 'fly-wrap';
+  wrap.innerHTML = html;
+  wrap.style.left = fromRect.left + 'px';
+  wrap.style.top = fromRect.top + 'px';
+  wrap.style.width = fromRect.width + 'px';
+  wrap.style.height = fromRect.height + 'px';
+  document.body.appendChild(wrap);
+  if (hideEl) hideEl.style.opacity = '0';
+  const dx = (toRect.left + toRect.width / 2) - (fromRect.left + fromRect.width / 2);
+  const dy = (toRect.top + toRect.height / 2) - (fromRect.top + fromRect.height / 2);
+  const scale = toRect.width / fromRect.width;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    wrap.style.transform = `translate(${dx}px, ${dy}px) rotate(7deg) scale(${scale})`;
+  }));
+  setTimeout(() => { wrap.remove(); if (hideEl) hideEl.style.opacity = ''; }, 500);
+  return true;
+}
+
+function splashColor(color) {
+  if (!color) return;
+  const pile = $('discard-pile');
+  if (pile) {
+    const r = pile.getBoundingClientRect();
+    if (r.width) {
+      const el = document.createElement('div');
+      el.className = 'wild-splash';
+      el.style.background = 'radial-gradient(circle, var(--' + color + ') 0%, rgba(0,0,0,0) 65%)';
+      el.style.left = (r.left + r.width / 2) + 'px';
+      el.style.top = (r.top + r.height / 2) + 'px';
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 620);
+    }
+  }
+  const t = $('table');
+  if (t) {
+    t.style.setProperty('--splash', 'var(--' + color + ')');
+    t.classList.remove('splash-glow');
+    void t.offsetWidth;
+    t.classList.add('splash-glow');
+  }
 }
 
 function showUnoPop(name) {
@@ -801,6 +933,296 @@ paintSoundBtn();
 document.addEventListener('pointerdown', (e) => {
   if (e.target.closest && e.target.closest('.btn, .color-btn')) sfx('click');
 }, { passive: true });
+// ------------------------------------------------------------ v3: wallet, profile, quick match, leaderboard
+// Coins are a client-side toy wallet in localStorage — free play money,
+// worth nothing, never bought or sold. The server never sees them except
+// as the quick-match stake echoed in the room snapshot.
+const TIERS = [
+  { id: 'casual', name: 'Casual', bet: 20 },
+  { id: 'standard', name: 'Standard', bet: 50 },
+  { id: 'pro', name: 'Pro', bet: 100 },
+  { id: 'master', name: 'Master', bet: 250 },
+];
+
+function todayStr() {
+  const d = new Date();
+  return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate();
+}
+function loadWallet() {
+  try {
+    const w = JSON.parse(localStorage.getItem('uno-adda-wallet') || 'null');
+    if (w && typeof w.balance === 'number') return { balance: Math.max(0, Math.floor(w.balance)), lastGiftDate: w.lastGiftDate || '', lastRescueDate: w.lastRescueDate || '' };
+  } catch { /* fresh wallet */ }
+  return { balance: 500, lastGiftDate: '', lastRescueDate: '' };
+}
+let wallet = loadWallet();
+function saveWallet() { localStorage.setItem('uno-adda-wallet', JSON.stringify(wallet)); }
+
+function loadProfile() {
+  try {
+    const p = JSON.parse(localStorage.getItem('uno-adda-profile') || 'null');
+    if (p) return {
+      avatar: (Number.isInteger(p.avatar) && p.avatar >= 0 && p.avatar <= 3) ? p.avatar : null,
+      wins: Math.max(0, p.wins | 0),
+      coinsWon: Math.max(0, p.coinsWon | 0),
+    };
+  } catch { /* fresh profile */ }
+  return { avatar: null, wins: 0, coinsWon: 0 };
+}
+let profile = loadProfile();
+function saveProfile() { localStorage.setItem('uno-adda-profile', JSON.stringify(profile)); }
+function myAvatar() { return profile.avatar != null ? profile.avatar : 0; }
+
+function paintWallet() {
+  document.querySelectorAll('.coin-balance').forEach(el => { el.textContent = wallet.balance; });
+  paintGift();
+}
+function paintGift() {
+  const b = $('btn-gift');
+  if (!b) return;
+  const claimed = wallet.lastGiftDate === todayStr();
+  b.disabled = claimed;
+  b.textContent = claimed ? '🎁 Come back tomorrow' : '🎁 Daily Gift +200';
+}
+function coinBurst(anchor) {
+  if (!anchor) return;
+  const r = anchor.getBoundingClientRect();
+  for (let i = 0; i < 9; i++) {
+    const img = document.createElement('img');
+    img.src = 'art/coin.webp';
+    img.alt = '';
+    img.className = 'coin-fly';
+    img.style.left = (r.left + r.width / 2 - 15) + 'px';
+    img.style.top = (r.top + r.height / 2 - 15) + 'px';
+    img.style.setProperty('--dx', ((Math.random() * 170) - 85) + 'px');
+    img.style.setProperty('--dy', (-(40 + Math.random() * 110)) + 'px');
+    document.body.appendChild(img);
+    setTimeout(() => img.remove(), 900);
+  }
+}
+function claimGift() {
+  if (wallet.lastGiftDate === todayStr()) return;
+  wallet.lastGiftDate = todayStr();
+  wallet.balance += 200;
+  saveWallet();
+  paintWallet();
+  coinBurst($('btn-gift'));
+  sfx('win');
+  toast('🎁 Daily gift: +200 coins!');
+}
+// Free refill so nobody is ever hard-locked: balance too low to play,
+// today's gift already claimed, once per day.
+function maybeRescue() {
+  if (wallet.balance < 20 && wallet.lastGiftDate === todayStr() && wallet.lastRescueDate !== todayStr()) {
+    wallet.lastRescueDate = todayStr();
+    wallet.balance += 100;
+    saveWallet();
+    paintWallet();
+    toast('🪙 Free refill: +100 coins — good luck!');
+    return true;
+  }
+  return false;
+}
+$('btn-gift').onclick = claimGift;
+
+// ------------------------------------------------------------ home tiles & tiers
+function selectTile(name) {
+  document.querySelectorAll('.tile').forEach(t => t.classList.toggle('active', t.dataset.tile === name));
+  document.querySelectorAll('.tile-panel').forEach(p => p.classList.toggle('hidden', p.id !== 'panel-' + name));
+}
+document.querySelectorAll('.tile').forEach(t => { t.onclick = () => selectTile(t.dataset.tile); });
+selectTile('quick');
+
+$('tier-list').innerHTML = TIERS.map(t => `
+  <button class="tier" data-tier="${t.id}">
+    <span class="tier-name">${t.name}</span>
+    <span class="tier-tag">Winner takes ×4 pot</span>
+    <span class="tier-bet"><img class="coin-ic" src="art/coin.webp" alt=""> ${t.bet}</span>
+  </button>`).join('');
+document.querySelectorAll('.tier').forEach(b => {
+  b.onclick = () => startQuickMatch(TIERS.find(t => t.id === b.dataset.tier));
+});
+
+// ------------------------------------------------------------ avatar picker
+function paintHomeAvatar() {
+  const el = $('name-avatar');
+  if (el) el.className = 'name-avatar av av' + myAvatar();
+}
+function openAvatarPicker() {
+  document.querySelectorAll('.pick-av').forEach(b => b.classList.toggle('selected', Number(b.dataset.av) === myAvatar()));
+  $('avatar-modal').classList.remove('hidden');
+}
+$('name-avatar').onclick = openAvatarPicker;
+$('my-avatar').onclick = openAvatarPicker;
+document.querySelectorAll('.pick-av').forEach(b => {
+  b.onclick = () => {
+    profile.avatar = Number(b.dataset.av);
+    saveProfile();
+    paintHomeAvatar();
+    document.querySelectorAll('.pick-av').forEach(x => x.classList.toggle('selected', x === b));
+    sfx('click');
+  };
+});
+$('btn-avatar-close').onclick = () => $('avatar-modal').classList.add('hidden');
+paintHomeAvatar();
+
+// ------------------------------------------------------------ quick match flow
+let quick = null; // { tier, bet, charged, settledKey, payout }
+let mmTimers = [];
+let mmRevealed = 1;
+let mmStartedAt = 0;
+const countedMatchRooms = new Set();
+
+function startQuickMatch(tier) {
+  if (!tier) return;
+  maybeRescue();
+  if (wallet.balance < tier.bet) {
+    const hint = wallet.lastGiftDate !== todayStr()
+      ? 'Claim your Daily Gift 🎁 — or play a cheaper tier.'
+      : 'Try the Casual tier — or come back tomorrow for your Daily Gift.';
+    showError(`Not enough coins for ${tier.name} (needs ${tier.bet}, you have ${wallet.balance}). ${hint}`);
+    toast(`Not enough coins for ${tier.name} — ${hint}`);
+    return;
+  }
+  wallet.balance -= tier.bet;
+  saveWallet();
+  paintWallet();
+  quick = { tier, bet: tier.bet, charged: true, settledKey: null, payout: 0 };
+  showMatchmaking();
+  connect(() => send({
+    type: 'create_bot_game', name: myName(), avatar: profile.avatar,
+    botCount: 3, rules: { stacking: true, challenge: true, allWild: false },
+    quick: true, bet: tier.bet,
+  }));
+}
+
+function showMatchmaking() {
+  mmRevealed = 1;
+  mmStartedAt = Date.now();
+  renderMmSlots();
+  $('mm-modal').classList.remove('hidden');
+  mmTimers.forEach(clearTimeout);
+  mmTimers = [];
+  [750, 1500, 2250].forEach((t, i) => mmTimers.push(setTimeout(() => { mmRevealed = i + 2; renderMmSlots(); sfx('click'); }, t)));
+  mmTimers.push(setTimeout(maybeShowVS, 2600));
+}
+
+function renderMmSlots() {
+  const box = $('mm-slots');
+  if (!box) return;
+  const seats = snap && snap.room && snap.room.quick && snap.game ? snap.seats : null;
+  box.innerHTML = [0, 1, 2, 3].map(i => {
+    const s = seats && seats[i];
+    if (s && (i === 0 || i < mmRevealed)) {
+      return `<div class="mm-slot filled"><span class="avatar av${s.avatar != null ? s.avatar : i}"></span><b>${esc(s.name)}</b></div>`;
+    }
+    if (i === 0) {
+      return `<div class="mm-slot filled"><span class="avatar av${myAvatar()}"></span><b>${esc(myName())}</b></div>`;
+    }
+    return `<div class="mm-slot"><span class="avatar avq">?</span><b>Searching…</b></div>`;
+  }).join('');
+}
+
+function maybeShowVS() {
+  if (!quick) { $('mm-modal').classList.add('hidden'); return; }
+  if (!(snap && snap.room.quick && snap.game)) {
+    if (Date.now() - mmStartedAt > 12000) {
+      showError('Could not reach the game server — your stake was refunded.');
+      return;
+    }
+    mmTimers.push(setTimeout(maybeShowVS, 500));
+    return;
+  }
+  mmRevealed = 4;
+  renderMmSlots();
+  $('mm-modal').classList.add('hidden');
+  $('vs-my-avatar').className = 'avatar av' + myAvatar();
+  $('vs-my-name').textContent = myName();
+  $('vs-opps').innerHTML = snap.seats.filter(s => !s.isYou).map(s => `
+    <div class="vs-card"><span class="avatar av${s.avatar != null ? s.avatar : 0}"></span><b>${esc(s.name)}</b></div>`).join('');
+  $('vs-modal').classList.remove('hidden');
+  sfx('ding');
+  mmTimers.push(setTimeout(() => $('vs-modal').classList.add('hidden'), 1600));
+}
+
+// Settle a finished quick match exactly once per room+round.
+function settleQuick(msg) {
+  if (!quick || !msg.room.quick || msg.room.status !== 'roundEnd' || !msg.lastRound) return;
+  const key = msg.room.code + '|' + msg.room.roundNo;
+  if (quick.settledKey === key) return;
+  quick.settledKey = key;
+  const winner = msg.seats.find(s => s.id === msg.lastRound.winnerSeatId);
+  const pot = (msg.room.bet || quick.bet) * msg.seats.length;
+  if (winner && winner.isYou) {
+    wallet.balance += pot;
+    saveWallet();
+    paintWallet();
+    profile.wins++;
+    profile.coinsWon += pot;
+    saveProfile();
+    quick.payout = pot;
+    coinBurst($('game-topbar'));
+  } else {
+    quick.payout = 0;
+  }
+  submitStats();
+}
+
+// Classic bot matches: reaching 500 against only bots counts as a win.
+function countClassicMatchWin(msg) {
+  if (msg.room.quick || !msg.matchWinnerSeatId || msg.matchWinnerSeatId !== msg.you.seatId) return;
+  if (!msg.seats.every(s => s.isYou || s.isBot)) return;
+  if (countedMatchRooms.has(msg.room.code)) return;
+  countedMatchRooms.add(msg.room.code);
+  profile.wins++;
+  saveProfile();
+  submitStats();
+}
+
+// ------------------------------------------------------------ leaderboard
+async function submitStats() {
+  try {
+    await fetch('/api/leaderboard', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: myName(), avatar: myAvatar(), wins: profile.wins, coinsWon: profile.coinsWon }),
+    });
+  } catch { /* offline — the board is best-effort */ }
+}
+async function openBoard() {
+  $('board-modal').classList.remove('hidden');
+  const box = $('board-rows');
+  box.innerHTML = '<p class="muted">Loading…</p>';
+  try {
+    const res = await fetch('/api/leaderboard');
+    if (!res.ok) throw new Error('board ' + res.status);
+    const data = await res.json();
+    renderBoard(data.entries || []);
+  } catch {
+    box.innerHTML = '<p class="muted">Leaderboard unavailable right now — play a Quick Match and check back!</p>';
+  }
+}
+function renderBoard(entries) {
+  const box = $('board-rows');
+  if (!entries.length) {
+    box.innerHTML = '<p class="muted">No scores yet — win a Quick Match and be the first!</p>';
+    return;
+  }
+  const medals = ['🥇', '🥈', '🥉'];
+  box.innerHTML = entries.map((e, i) => `
+    <div class="board-row ${String(e.name).toLowerCase() === myName().toLowerCase() ? 'mine' : ''}">
+      <span class="board-rank">${medals[i] || (i + 1)}</span>
+      <span class="avatar av${e.avatar != null ? e.avatar : 0}"></span>
+      <span class="board-name">${esc(e.name)}</span>
+      <span class="board-wins">${e.wins} wins</span>
+      <span class="board-coins"><img class="coin-ic" src="art/coin.webp" alt=""> ${e.coinsWon}</span>
+    </div>`).join('');
+}
+$('btn-board').onclick = openBoard;
+$('btn-board-close').onclick = () => $('board-modal').classList.add('hidden');
+
+paintWallet();
+
 // boot: try to restore an in-progress room. The saved code must be known
 // BEFORE the socket opens, so the Worker routes us to the right object.
 try {

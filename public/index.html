@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>UNO Adda — free card game with friends &amp; bots</title>
 <link rel="stylesheet" href="style.css">
-<link rel="preload" as="image" href="art/lobby-bg.webp">
+<link rel="preload" as="image" href="art/sky-bg.webp">
 </head>
 <body data-view="home">
 
@@ -22,17 +22,37 @@
       <span class="mini-card red">7</span><span class="mini-card blue">2</span><span class="mini-card green">5</span><span class="mini-card yellow">9</span>
     </div>
     <h1 class="logo"><span class="logo-uno">UNO</span> <span class="logo-adda">Adda</span></h1>
-    <p class="tagline">The classic card game — free, with friends or bots. No coins, no ads.</p>
+    <p class="tagline">The classic card game — free, with friends or bots.</p>
   </div>
 
-  <label class="field name-field"><span class="field-label">Your name</span>
-    <span class="name-chip"><span id="name-avatar" class="name-avatar av av0"></span>
+  <label class="field name-field"><span class="field-label">Your name <span class="muted">(tap the character to change it)</span></span>
+    <span class="name-chip"><span id="name-avatar" class="name-avatar av av0" title="Choose your character"></span>
       <input id="in-name" type="text" maxlength="20" placeholder="e.g. Tanvir" autocomplete="off">
     </span>
   </label>
 
-  <div class="panel panel-bots">
-    <h2><span class="h2-dot"></span>Quick game vs bots</h2>
+  <div class="wallet-row">
+    <span class="coin-chip" title="Your coins — free play money, just for fun"><img class="coin-ic" src="art/coin.webp" alt=""><span class="coin-balance">500</span></span>
+    <button id="btn-gift" class="btn gift">🎁 Daily Gift +200</button>
+    <button id="btn-board" class="btn">🏆 Leaderboard</button>
+  </div>
+
+  <div class="tiles">
+    <button class="tile tile-quick active" data-tile="quick"><span class="tile-emoji">⚡</span><span class="tile-name">Quick Match</span><span class="tile-sub">One round · win the pot</span></button>
+    <button class="tile tile-classic" data-tile="classic"><span class="tile-emoji">🎮</span><span class="tile-name">Classic</span><span class="tile-sub">Vs bots · first to 500</span></button>
+    <button class="tile tile-wild" data-tile="wild"><span class="tile-emoji">🌈</span><span class="tile-name">Go Wild</span><span class="tile-sub">Every card is wild!</span></button>
+    <button class="tile tile-friends" data-tile="friends"><span class="tile-emoji">👥</span><span class="tile-name">Friends</span><span class="tile-sub">Rooms · voice chat</span></button>
+  </div>
+
+  <div class="panel tile-panel" id="panel-quick">
+    <h2><span class="h2-dot"></span>⚡ Quick Match — pick your stake</h2>
+    <p class="muted">One round against 3 bots. Win the round and you take the whole pot — your stake × 4. Coins are free play money: no real money, no ads, ever.</p>
+    <div id="tier-list"></div>
+    <p id="quick-note" class="muted"></p>
+  </div>
+
+  <div class="panel panel-bots tile-panel hidden" id="panel-classic">
+    <h2><span class="h2-dot"></span>Classic game vs bots</h2>
     <label class="field inline">Bots
       <select id="in-bots"><option value="1">1</option><option value="2" selected>2</option><option value="3">3</option></select>
     </label>
@@ -40,7 +60,16 @@
     <button id="btn-bots" class="btn primary big">▶ Play vs Bots</button>
   </div>
 
-  <div class="panel panel-friends">
+  <div class="panel tile-panel hidden" id="panel-wild">
+    <h2><span class="h2-dot"></span>🌈 Go Wild</h2>
+    <p class="muted">All Wild mode: every single card plays on everything — chaos! Action effects (+2, +4, Skip…) still bite.</p>
+    <label class="field inline">Bots
+      <select id="in-bots-wild"><option value="1">1</option><option value="2" selected>2</option><option value="3">3</option></select>
+    </label>
+    <button id="btn-wild" class="btn primary big">🌈 Play Go Wild</button>
+  </div>
+
+  <div class="panel panel-friends tile-panel hidden" id="panel-friends">
     <h2><span class="h2-dot"></span>Play with friends</h2>
     <label class="field inline">Mode
       <select id="in-mode"><option value="classic">Classic</option><option value="2v2">2v2 Teams (4 players)</option></select>
@@ -64,6 +93,7 @@
       <li><b>UNO:</b> playing down to one card? Tap the UNO button or you can be caught — caught means drawing 2 penalty cards.</li>
       <li><b>All Wild (optional):</b> every card plays on everything. Action effects still apply.</li>
       <li><b>Scoring:</b> win a round to score the value of everyone's leftover cards — numbers at face value, action cards 20, Wilds 50. First to 500 takes the match.</li>
+      <li><b>Quick Match:</b> a single round against 3 bots for a coin stake — win the round, take the pot (stake × 4). Coins are free play money that lives in your browser; the daily gift refills them.</li>
       <li>You have <b>30 seconds</b> per turn. Run out and you draw automatically.</li>
     </ul>
   </details>
@@ -100,6 +130,10 @@
 
 <!-- ======================= GAME ======================= -->
 <section id="view-game" class="view hidden">
+  <div id="game-topbar">
+    <span class="coin-chip" title="Your coins — free play money, just for fun"><img class="coin-ic" src="art/coin.webp" alt=""><span class="coin-balance">500</span></span>
+    <span id="game-mode-label"></span>
+  </div>
   <div id="timerbar"><div id="timerfill"></div></div>
 
   <div id="table-scene">
@@ -168,10 +202,53 @@
   <div class="modal-box">
     <h3 id="end-title"></h3>
     <p id="end-match"></p>
+    <p id="end-payout" class="hidden"></p>
     <table id="end-table"></table>
     <button id="btn-again" class="btn primary big">Play Next Round</button>
+    <button id="btn-quick-again" class="btn primary big hidden">↻ Play Again</button>
     <p id="end-wait" class="muted hidden">Waiting for the host to start the next round…</p>
     <button id="btn-exit" class="btn">Back to Home</button>
+  </div>
+</div>
+
+<!-- quick match: matchmaking -->
+<div id="mm-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3>⚡ Finding players…</h3>
+    <div id="mm-slots" class="mm-slots"></div>
+    <p class="muted">Quick Match · one round · winner takes the pot</p>
+  </div>
+</div>
+
+<!-- quick match: VS screen -->
+<div id="vs-modal" class="modal hidden">
+  <div class="modal-box vs-box">
+    <div class="vs-you"><span id="vs-my-avatar" class="avatar av0"></span><b id="vs-my-name"></b></div>
+    <div class="vs-word">VS</div>
+    <div id="vs-opps" class="vs-opps"></div>
+  </div>
+</div>
+
+<!-- avatar picker -->
+<div id="avatar-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3>Choose your character</h3>
+    <div class="avatar-grid">
+      <button class="pick-av" data-av="0"><span class="avatar av0"></span></button>
+      <button class="pick-av" data-av="1"><span class="avatar av1"></span></button>
+      <button class="pick-av" data-av="2"><span class="avatar av2"></span></button>
+      <button class="pick-av" data-av="3"><span class="avatar av3"></span></button>
+    </div>
+    <button id="btn-avatar-close" class="btn">Done</button>
+  </div>
+</div>
+
+<!-- leaderboard -->
+<div id="board-modal" class="modal hidden">
+  <div class="modal-box">
+    <h3>🏆 Leaderboard</h3>
+    <div id="board-rows"></div>
+    <button id="btn-board-close" class="btn">Close</button>
   </div>
 </div>
 

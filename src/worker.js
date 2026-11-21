@@ -10,8 +10,9 @@
  *   The client protocol itself is unchanged from the Node version.
  */
 import { GameRoom } from './room.js';
+import { LeaderboardDO } from './leaderboard.js';
 
-export { GameRoom };
+export { GameRoom, LeaderboardDO };
 
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
 
@@ -29,6 +30,11 @@ export default {
 
     if (url.pathname === '/health') {
       return new Response('ok', { headers: { 'Content-Type': 'text/plain' } });
+    }
+
+    if (url.pathname === '/api/leaderboard') {
+      const stub = env.BOARD.get(env.BOARD.idFromName('global'));
+      return stub.fetch(request);
     }
 
     if (url.pathname === '/ws' || url.pathname.startsWith('/ws/')) {

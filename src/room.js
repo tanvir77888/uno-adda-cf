@@ -21,6 +21,21 @@ import * as G from './game.js';
 
 const BOT_NAMES = ['Bot Rafi', 'Bot Nila', 'Bot Tanu'];
 
+// A chosen character avatar is an int 0..3; anything else (including a
+// missing/null field from an older client) means "not chosen" -> null,
+// and snapshots fall back to the seat index for that seat.
+function validAvatar(a) {
+  if (a === null || a === undefined) return null;
+  const n = Number(a);
+  return Number.isInteger(n) && n >= 0 && n <= 3 ? n : null;
+}
+
+function clampBet(v) {
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(1000, Math.max(0, n));
+}
+
 function randomHex(bytes) {
   const b = new Uint8Array(bytes);
   crypto.getRandomValues(b);
@@ -100,12 +115,13 @@ export class GameRoom {
   // ------------------------------------------------------------ seats & sockets
   newSeatId() { return 's' + (++this.seatSeq); }
 
-  makeSeat(name, isBot) {
+  makeSeat(name, isBot, avatar) {
     return {
       id: this.newSeatId(),
       token: randomHex(12),
       name: String(name || 'Player').slice(0, 20),
       isBot: !!isBot,
+      avatar: validAvatar(avatar),
       ready: false,
       connected: true,
       team: null,
@@ -148,11 +164,15 @@ export class GameRoom {
   }
 
   // ------------------------------------------------------------ room lifecycle
-  makeRoom(hostSeat, mode, rules) {
+  makeRoom(hostSeat, mode, rules, opts = {}) {
     const room = {
       code: this.ctx.id.name,
       hostSeatId: hostSeat.id,
       mode: mode === '2v2' ? '2v2' : 'classic',
+      // Quick Match (v3): a single-round bot match with a coin stake.
+      // Classic rooms leave both at their defaults and behave as before.
+      quick: !!opts.quick,
+      bet: clampBet(opts.bet),
       rules: {
         stacking: !rules || rules.stacking !== false,
         challenge: !rules || rules.challenge !== false,
@@ -211,10 +231,11 @@ export class GameRoom {
     const g = room.game;
     const snap = {
       type: 'state',
-      room: { code: room.code, mode: room.mode, rules: room.rules, status: room.status, hostSeatId: room.hostSeatId, roundNo: room.roundNo },
+      room: { code: room.code, mode: room.mode, rules: room.rules, status: room.status, hostSeatId: room.hostSeatId, roundNo: room.roundNo, quick: !!room.quick, bet: room.bet || 0 },
       you: { seatId: viewer.id, token: viewer.token },
-      seats: room.seats.map((s) => ({
+      seats: room.seats.map((s, i) => ({
         id: s.id, name: s.name, isBot: s.isBot, ready: s.ready, connected: s.connected, inVoice: !!s.inVoice,
+        avatar: s.avatar != null ? s.avatar : i % 4,
         team: s.team, score: room.scores[s.id] || 0,
         cardCount: g ? g.hands[s.id].length : 0,
         isCurrent: g ? G.currentSeatId(g) === s.id : false,
@@ -450,13 +471,20 @@ export class GameRoom {
     switch (msg.type) {
       case 'create_bot_game': {
         if (this.room) return this.sendError(ws, 'Leave this room first');
-        const seat = this.makeSeat(msg.name, false);
+        const seat = this.makeSeat(msg.name, false, msg.avatar);
         seat.ready = true;
-        const room = this.makeRoom(seat, 'classic', msg.rules || {});
+        const room = this.makeRoom(seat, 'classic', msg.rules || {}, { quick: !!msg.quick, bet: msg.bet });
         this.bindSocket(ws, seat);
         const bots = Math.min(3, Math.max(1, msg.botCount || 1));
+        // Bots get distinct random avatars per match, preferring characters
+        // the human did not pick.
+        const pool = [0, 1, 2, 3].filter((a) => a !== seat.avatar);
+        for (let i = pool.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [pool[i], pool[j]] = [pool[j], pool[i]];
+        }
         for (let i = 0; i < bots; i++) {
-          const bot = this.makeSeat(BOT_NAMES[i % BOT_NAMES.length], true);
+          const bot = this.makeSeat(BOT_NAMES[i % BOT_NAMES.length], true, pool[i % pool.length]);
           bot.ready = true;
           room.seats.push(bot);
           room.scores[bot.id] = 0;
@@ -465,7 +493,7 @@ export class GameRoom {
       }
       case 'create_room': {
         if (this.room) return this.sendError(ws, 'Leave this room first');
-        const seat = this.makeSeat(msg.name, false);
+        const seat = this.makeSeat(msg.name, false, msg.avatar);
         const room = this.makeRoom(seat, msg.mode, msg.rules || {});
         this.bindSocket(ws, seat);
         return this.afterChange([]);
@@ -479,12 +507,14 @@ export class GameRoom {
           if (existing && !existing.isBot) {
             this.bindSocket(ws, existing);
             if (msg.name) existing.name = String(msg.name).slice(0, 20);
+            const av = validAvatar(msg.avatar);
+            if (av !== null) existing.avatar = av;
             return this.afterChange([]);
           }
         }
         if (room.status !== 'waiting') return this.sendError(ws, 'That game has already started');
         if (room.seats.length >= 4) return this.sendError(ws, 'That room is full');
-        const seat = this.makeSeat(msg.name, false);
+        const seat = this.makeSeat(msg.name, false, msg.avatar);
         room.seats.push(seat);
         room.scores[seat.id] = 0;
         this.bindSocket(ws, seat);
@@ -502,6 +532,8 @@ export class GameRoom {
         return this.afterChange([]);
       case 'start_game': {
         if (seat.id !== room.hostSeatId) return this.sendError(ws, 'Only the host can start');
+        // Quick Match is a single round: once it ends, the match is over.
+        if (room.quick && room.status === 'roundEnd') return this.sendError(ws, 'Quick match is over — start a new one from the lobby');
         if (room.status === 'playing') return this.sendError(ws, 'The game is already running');
         if (room.seats.length < 2) return this.sendError(ws, 'You need at least 2 players');
         if (room.mode === '2v2' && room.seats.length !== 4) return this.sendError(ws, '2v2 needs exactly 4 players');
